@@ -1,0 +1,16 @@
+###### Requirements (without Version Specifiers) ######
+gym
+gym[atari]
+autorom[accept-rom-license]
+jax
+jaxlib
+matplotlib
+pygame
+torch
+seaborn
+scikit-image
+imageio
+sk-video
+pandas
+imageio[ffmpeg]
+imageio[pyav]

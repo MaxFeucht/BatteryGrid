@@ -1,0 +1,6 @@
+Metadata-Version: 2.1
+Name: gym-env
+Version: 0.0.1
+Requires-Dist: gymnasium
+Requires-Dist: pandas
+Requires-Dist: numpy
