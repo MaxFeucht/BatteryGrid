@@ -112,7 +112,7 @@ class BatteryGridEnv(gym.Env):
         # Check charge of battery for next day
         if current_hour == 7:
             if self.battery_charge < 20:
-                action = 5
+                action = np.ceil(((self.battery_charge)/0.9) / 5) # Charge 0 (= 25kwH) when battery is empty, 1 (= 20 kWh) when battery has 5 kWh, 2 (= 15 kWh) when battery has 10 kWh, etc.
                 # TODO: add penalty for trying to do anything else than charge when it is 7 and battery is not ready
             
         
