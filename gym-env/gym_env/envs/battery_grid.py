@@ -8,7 +8,6 @@ import pandas as pd
 class BatteryGridEnv(gym.Env):
 
     def __init__(self):
-        self.index = 0
         
         # Observations are dictionaries with the agent's and the target's location.
         # Each location is encoded as an element of {0, ..., `size`}^2, i.e. MultiDiscrete([size, size]).
@@ -29,17 +28,19 @@ class BatteryGridEnv(gym.Env):
         # self.action_space = spaces.Box(-1, 1, dtype=float)
 
 
-    def setup(self, df, price_horizon = 96):
+    def setup(self, df, price_horizon = 96, future_horizon = 12):
         self.prices = np.array(df['price'])  # The size of the square grid
         self.datetime = list(df['datetime'])  # The size of the PyGame window
         self.price_horizon = price_horizon
+        self.index = price_horizon
+        self.future_horizon = future_horizon
     
 
-    def normalize(self, data):
+    def normalize(self, var):
         """
         Helper function to normalize data between 0 and 1
         """
-        return (data - np.min(data)) / (np.max(data) - np.min(data))
+        return (var - np.mean(var)) / np.std(var)
 
 
 
@@ -53,24 +54,27 @@ class BatteryGridEnv(gym.Env):
             obs_dict: dictionary of observations
         """
         
-        price_history = self.prices[:self.index+1]
+        #price_history = self.prices[self.index-self.price_horizon:self.index]
+        price_history = self.prices[(self.index - self.price_horizon + self.future_horizon) : (self.index + self.future_horizon)]
         battery_charge = self.battery_charge 
-        hour = self.datetime[self.index].hour + 6 # Shift to 6 am, such that the day is not "split" in the middle of the night
+        hour = self.datetime[self.index].hour # Shift to 6 am, such that the day is not "split" in the middle of the night
         day = self.datetime[self.index].day
         
-        if len(price_history) < self.price_horizon:
-            price_history = np.concatenate((np.zeros(self.price_horizon-len(price_history)), price_history))
+        # Not needed anymore because we initialize the index with the price horizon
+        # if len(price_history) < self.price_horizon:
+        #     price_history = np.concatenate((np.zeros(self.price_horizon-len(price_history)), price_history))
 
-        elif len(price_history) > self.price_horizon:
-            price_history = price_history[self.index-self.price_horizon:self.index] 
-            
-        if normalize: # Normalize data
+        # elif len(price_history) > self.price_horizon:
+        #     price_history = price_history[self.index-self.price_horizon:self.index] 
+        
+        # Normalize data
+        if normalize: 
             price_history = self.normalize(price_history)
-            battery_charge = battery_charge / 50
-            hour = hour / 24 
-            day = day / 365
+            battery_charge = (battery_charge - 25) / 50
+            hour = (hour - 12) / 24 
+            day = (day - 182) / 365
             
-        obs_dict = {"battery": battery_charge, "hour": hour, "day": day, "presence": self.presence, "prices": price_history}
+        obs_dict = {"battery": battery_charge,"prices": price_history, "hour": hour, "day": day, "presence": self.presence}
         obs_dict["tensor"] = self.dict_to_tensor(obs_dict)
         
         return obs_dict
@@ -96,7 +100,7 @@ class BatteryGridEnv(gym.Env):
 
         # Choose the agent's location uniformly at random
         self.battery_charge = 0
-        self.index = 0
+        self.index = self.price_horizon
         self.presence = 1
         
         obs_dict = self._get_obs()
@@ -105,14 +109,15 @@ class BatteryGridEnv(gym.Env):
         
     
     def step(self, action):
-        # Map the action (element of {0,1,2,3}) to the direction we walk in
+        
+        # Obtain current price and hour
         current_price = self.prices[self.index]
         current_hour = self.datetime[self.index].hour        
                 
         # Check charge of battery for next day
         if current_hour == 7:
             if self.battery_charge < 20:
-                action = np.ceil(((self.battery_charge)/0.9) / 5) # Charge 0 (= 25kwH) when battery is empty, 1 (= 20 kWh) when battery has 5 kWh, 2 (= 15 kWh) when battery has 10 kWh, etc.
+                action = 5 - np.ceil(((20 - self.battery_charge)/0.9)/5) # Charge 0 (= 25kwH) when battery is empty, 1 (= 20 kWh) when battery has 5 kWh, 2 (= 15 kWh) when battery has 10 kWh, etc.
                 # TODO: add penalty for trying to do anything else than charge when it is 7 and battery is not ready
             
         
@@ -124,6 +129,7 @@ class BatteryGridEnv(gym.Env):
             if self.presence == 0:
                 self.battery_charge -= 20 # Discharge of 20 kWh if car was gone the whole day
             self.presence = 1
+
 
         # If car present, take action
         if self.presence == 1:
@@ -146,22 +152,19 @@ class BatteryGridEnv(gym.Env):
                 raise ValueError(f"Invalid action {action}")      
 
         else:
-            if action == 0 or action == 1:
-                reward = -5 # penalty for trying to charge when car is not available
-            else:
-                reward = 0
+            reward = 0
 
 
         # Obtain observation
         observation = self._get_obs(normalize = True)
-        info = {"price_history" : self.prices[:self.index+1]}
+        info = {"price_history" : self.prices[:self.index]}
         
         # Increase index
         self.index += 1
         
         # Check termination
         try:
-            p = self.prices[self.index] # check if there is a next price
+            p = self.prices[self.index + self.future_horizon] # check if there is a next  (within horizon)
             terminated = False
         except:
             terminated = True
@@ -246,7 +249,7 @@ class BatteryGridEnvCont(gym.Env):
 
         if self.presence == 1:
             
-            if action < 0:  # No if statement, because we can always charge
+            if action < 0:  
                 self.battery_charge = np.clip(self.battery_charge + 25*0.9, 0, 50)
                 reward = current_price * 25 * action * 2 
                     
