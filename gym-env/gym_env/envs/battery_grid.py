@@ -106,6 +106,20 @@ class BatteryGridEnv(gym.Env):
         obs_dict = self._get_obs()
 
         return obs_dict
+    
+
+    def reward_shaping(self, balance):
+        
+        # Relative balance
+        # short_term_window = self.prices[self.index - 24 : self.index]
+        # rel_balance = balance / np.mean(balance_history)
+        
+        # Combining balance and relative price
+        # reward = balance * 0.5 + rel_balance
+        
+        reward = balance
+        
+        return reward
         
     
     def step(self, action):
@@ -133,31 +147,36 @@ class BatteryGridEnv(gym.Env):
 
         # If car present, take action
         if self.presence == 1:
-            
-            if action < 5:  # No if statement, because we can always charge
-                kwH = (5 - action) * 5 # Discretize, such that action 0 means most discharge, i.e., kWh = (5 - 0)* 5 = 25
-                self.battery_charge = np.clip(self.battery_charge + kwH*0.9, 0, 50)
-                reward = -current_price * kwH * 2  
+             
+            if action < 6:  # No if statement, because we can always charge
+                kWh = (6 - action) * 5 # Discretize, such that action 0 means most discharge, i.e., kWh = (5 - 0)* 5 = 25
+                kWh  -= 2.23 if action == 0 else kWh # max = 27.77 kWh
+                self.battery_charge = np.clip(self.battery_charge + kWh*0.9, 0, 50)
+                balance = -current_price * kWh * 2  
                 
-            elif action > 5: 
-                kwH = (action - 5) * 5 # Discretize, such that action 10 means most discharge, i.e., kWh = (10 - 5)* 5 = 25
-                discharge = min(self.battery_charge , kwH) # Discharge at most action * 25, but less if battery is has less than 25 kWh
+            elif action > 6: 
+                kWh = (action - 6) * 5 # Discretize, such that action 10 means most discharge, i.e., kWh = (10 - 5)* 5 = 25
+                kWh  -= 2.23 if action == 12 else kWh # max = 27.77 kWh
+                discharge = min(self.battery_charge , kWh) # Discharge at most action * 25, but less if battery is has less than 25 kWh
                 self.battery_charge = np.clip(self.battery_charge - discharge, 0, 50)
-                reward = current_price * discharge * 0.9
+                balance = current_price * discharge * 0.9
                 
-            elif action == 5:
-                reward = 0
+            elif action == 6:
+                balance = 0
                 
             else:
-                raise ValueError(f"Invalid action {action}")      
+                raise ValueError(f"Invalid action {action}") 
 
         else:
-            reward = 0
+            balance = 0
 
+        # Reward shaping
+        reward = self.reward_shaping(balance)
 
         # Obtain observation
         observation = self._get_obs(normalize = True)
-        info = {"price_history" : self.prices[:self.index]}
+        info = {"price_history" : self.prices[:self.index],
+                "balance": balance}
         
         # Increase index
         self.index += 1
@@ -170,7 +189,6 @@ class BatteryGridEnv(gym.Env):
             terminated = True
 
         return observation, reward, terminated, info
-    
     
     
     
