@@ -5,7 +5,7 @@ from collections import deque
 
 class ReplayBuffer:
     
-    def __init__(self, env, buffer_size, min_replay_size = 1000, seed = 123):
+    def __init__(self, env, buffer_size, min_replay_size = 1000, seed = 2705):
         
         '''
         Params:

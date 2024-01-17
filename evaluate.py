@@ -63,7 +63,7 @@ class RuleEvaluation():
 
         self.data = self.df[self.env.price_horizon:] # Select data based on start index (price horizon)
         
-        obs, _ = self.env.reset() # Reset environment and get initial observation
+        obs, info = self.env.reset() # Reset environment and get initial observation
 
         # Iterate through data 
         for i, price in enumerate(self.data['price']):
@@ -76,7 +76,7 @@ class RuleEvaluation():
             
             obs,r,t,info = self.env.step(action)
             self.actions.append(action)
-            self.balance.append(r)
+            self.balance.append(info['balance'])
             
             if t:
                 self.data = self.data[:i+1] # Cut data to match length of episode for plotting
@@ -285,7 +285,7 @@ class Evaluation():
         Iterate through data and take actions based on price quantiles as a function of the price horizon
         """
                 
-        obs, _ = self.env.reset() # Reset environment and get initial observation
+        obs, info = self.env.reset() # Reset environment and get initial observation
 
         for price in self.data['price']:
             
@@ -302,7 +302,7 @@ class Evaluation():
             obs,r,t,info =self.env.step(action)
             
             self.battery_charge.append(obs['battery'])
-            self.balance.append(r)
+            self.balance.append(info['balance'])
             
             if t:
                 break

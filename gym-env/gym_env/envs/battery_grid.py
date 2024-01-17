@@ -156,7 +156,8 @@ class BatteryGridEnv(gym.Env):
                 kWh  -= 2.23 if action == 0 else 0 # max = 27.77 kWh
                 self.battery_charge = np.clip(self.battery_charge + kWh*0.9, 0, 50)
                 balance = -current_price * kWh * 2 
-                    
+                reward = self.reward_shaping(balance)
+
                 if self.verbose:
                     print(f"Action {action}, Charging {kWh} kWh, balance: {balance}\n")
                 
@@ -166,17 +167,19 @@ class BatteryGridEnv(gym.Env):
                 discharge = min(self.battery_charge , kWh) # Discharge at most action * 25, but less if battery is has less than 25 kWh
                 self.battery_charge = np.clip(self.battery_charge - discharge, 0, 50)
                 balance = current_price * discharge * 0.9
-                
+                reward = self.reward_shaping(balance)
+
                 if self.extra_penalty:
                     # Penalty for discharging when battery is empty equal to the price of charging 1 kWh
-                    if balance == 0:
-                        balance = -current_price * np.abs(action)
+                    if reward == 0:
+                        reward = -current_price * np.abs(action)
                     
                 if self.verbose:
                     print(f"Action {action}, Charging {kWh} kWh, balance: {balance}\n")
 
             elif action == 6:
                 balance = 0
+                reward = self.reward_shaping(balance)
                 if self.verbose:
                     print(f"Action {action}, balance: {balance}\n")
                 
@@ -184,15 +187,14 @@ class BatteryGridEnv(gym.Env):
                 raise ValueError(f"Invalid action {action}") 
 
         else:
+            balance = 0
+            reward = self.reward_shaping(balance)
+            
             if self.extra_penalty:
                 # Penalty for trying to buy or sell electricity when car is not available
                 if action != 6:
-                    balance = -current_price * np.abs(action)
-            else:
-                balance = 0
+                    reward = -current_price * np.abs(action)
 
-        # Reward shaping
-        reward = self.reward_shaping(balance)
 
         # Obtain observation
         observation = self._get_obs(normalize = True)
