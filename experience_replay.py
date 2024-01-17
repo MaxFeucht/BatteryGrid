@@ -22,7 +22,7 @@ class ReplayBuffer:
         
         
         #Initialize replay buffer with random transitions (transitions based on random actions)      
-        obs = self.env.reset(seed=seed)
+        obs, _ = self.env.reset(seed=seed)
         
         for _ in range(self.min_replay_size):
             
@@ -34,7 +34,7 @@ class ReplayBuffer:
             obs = new_obs
     
             if terminated:
-                obs = env.reset(seed=seed)
+                obs, _ = env.reset(seed=seed)
               
           
     def add_data(self, data): 

@@ -25,16 +25,248 @@ env.setup(train, price_horizon=24)
 
 
 
+
+class RuleEvaluation():
+    
+    def __init__(self, df, env, verbose = False):
+        
+        self.df = df
+        self.env = env
+        self.verbose = verbose
+        
+        self.current_price = []
+        self.battery_charge = []
+        self.presence = []
+        self.balance = []
+        self.actions = []
+                
+            
+    def rule_agent(self, obs, low_quantile, high_quantile):
+        
+        
+        if obs['prices'][-1] < np.quantile(obs['prices'][-self.env.price_horizon:], low_quantile):
+            action = 0
+        elif obs['prices'][-1] > np.quantile(obs['prices'][-self.env.price_horizon:], low_quantile) and obs['prices'][-1] < np.quantile(obs['prices'][-self.env.price_horizon:], high_quantile):
+            action = 6
+        elif obs['prices'][-1] >  np.quantile(obs['prices'][-self.env.price_horizon:], high_quantile):
+            action = 12
+        else:
+            action = np.random.randint(0,12)
+            
+        return action
+
+
+    def evaluate(self, low_quantile = 0.25, high_quantile = 0.75):
+        """
+        Iterate through data and take actions based on price quantiles as a function of the price horizon
+        """
+
+        self.data = self.df[self.env.price_horizon:] # Select data based on start index (price horizon)
+        
+        obs, _ = self.env.reset() # Reset environment and get initial observation
+
+        # Iterate through data 
+        for i, price in enumerate(self.data['price']):
+            
+            self.current_price.append(price)
+            self.battery_charge.append(obs['battery'])
+            self.presence.append(obs['presence'])
+            
+            action = self.rule_agent(obs, low_quantile, high_quantile) # Take action based on rule agent
+            
+            obs,r,t,info = self.env.step(action)
+            self.actions.append(action)
+            self.balance.append(r)
+            
+            if t:
+                self.data = self.data[:i+1] # Cut data to match length of episode for plotting
+                assert len(self.data) == len(self.balance), f"Data and balance should have same length, {len(self.data)} != {len(self.balance)}"
+                break
+        
+        
+        
+class DDQNEvaluation():
+
+    def __init__(self, df, env, verbose = False):
+            
+            self.df = df
+            self.env = env
+            self.verbose = verbose
+            
+            self.current_price = []
+            self.battery_charge = []
+            self.presence = []
+            self.balance = []
+            self.actions = []
+            
+
+
+    def evaluate(self, agent = None):
+        """Function to iterate through data and take actions based on agent policy
+
+        Args:
+            iterations (int, optional): _description_. Defaults to 1000.
+            agent (_type_, optional): _description_. Defaults to None.
+        """
+        
+        assert agent is not None, "Agent must be defined"
+
+            
+        self.data = self.df[self.env.price_horizon:] # Select data based on start and stop index
+        
+        obs, _ = self.env.reset() # Reset environment and get initial observation
+
+        # Iterate through data
+        for i, price in enumerate(self.data['price']):
+            
+            self.current_price.append(price)
+            self.battery_charge.append(obs['battery'])
+            self.presence.append(obs['presence'])
+            
+            action = agent.choose_action(i, obs['tensor'], greedy = True)
+
+            obs,r,t,info = self.env.step(action)
+            self.actions.append(action)
+            self.balance.append(info['balance'])
+                
+            if t:
+                self.data = self.data[:i+1] # Cut data to match length of episode for plotting
+                assert len(self.data) == len(self.balance), f"Data and balance should have same length, {len(self.data)} != {len(self.balance)}"
+                break
+
+
+
+
+class Plotter():
+    
+    def __init__(self, evaluator, range = None):
+        
+        self.evaluator = evaluator
+        
+        self.dates = list(self.evaluator.data['datetime'])[range[0]:range[1]]
+        self.balance = self.evaluator.balance[range[0]:range[1]]
+        self.battery_charge = self.evaluator.battery_charge[range[0]:range[1]]
+        self.current_price = self.evaluator.current_price[range[0]:range[1]]
+        self.actions = self.evaluator.actions[range[0]:range[1]]
+        self.presence = self.evaluator.presence[range[0]:range[1]]
+
+    
+    def normalize(self, data):
+        """
+        Helper function to normalize data
+        """
+        return ((data - np.min(data)) / (np.max(data) - np.min(data)))
+    
+    
+    
+    def plot_all(self, cum = False, normalize = True):
+        
+        """ 
+        Plots battery charge, reward, price, and cumulative reward (if cum = True) in one combined plot
+        """
+        
+        plt.figure(figsize=(15,5))
+        
+        vars = [self.battery_charge, self.balance, self.current_price]
+        var_names = ['Battery Charge', 'Reward', 'Price']
+        
+        if cum: 
+            self.cumulative_balance = np.cumsum(self.balance)
+            vars.append(self.cumulative_balance)
+            var_names.append('Cumulative Reward')
+      
+
+        for var in vars:
+            
+            # Normalize data only for the time window of interest (not the entire dataset)
+            if normalize:
+                var = self.normalize(np.array(var))
+                
+            plt.plot(self.dates, var)
+            
+        plt.xticks(rotation=45)
+        plt.legend(var_names)
+        plt.show()
+        
+        
+    
+    def plot_single(self, normalize = True):
+            
+        """ 
+        Plots battery charge, balance, price, and cumulative balance in single subplots
+        """
+
+        plt.figure(figsize=(15,10))
+        self.cumulative_balance = np.cumsum(self.balance)
+        vars = [self.battery_charge, self.balance, self.current_price, self.cumulative_balance]
+        var_names = ['Battery Charge', 'Reward', 'Price', 'Cumulative Reward']
+        cols = ['blue', 'red', 'green', 'orange']
+        
+        for i, var in enumerate(vars):
+            
+            # Normalize data only for the time window of interest (not the entire dataset)
+            if normalize:
+                if var_names[i] != 'Cumulative Reward':
+                    var = self.normalize(np.array(var))
+                
+            plt.subplot(2,2,i+1)
+            plt.plot(self.dates, var, color = cols[i])
+            plt.title(var_names[i])
+            plt.xticks(rotation=45)
+                
+        plt.show()
+        
+
+    def plot_actions(self, balance = False, battery = False, presence = False):
+        
+        """ 
+        Plots actions taken by agent
+        """
+
+        plt.figure(figsize=(15,5))        
+
+        var_names = []
+        
+        if presence:
+            plt.plot(self.dates, self.normalize(self.presence), color = 'green', alpha = 0.8)
+            var_names.append('Presence')
+        
+        if balance:
+            plt.plot(self.dates, self.normalize(self.balance), color = 'black', alpha = 0.8)
+            var_names.append('Balance')
+        
+        if battery:
+            plt.plot(self.dates, self.normalize(self.battery_charge), color = 'orange', alpha = 0.8)
+            var_names.append('Battery')
+        
+        scatter = plt.scatter(self.dates, self.normalize(self.current_price), c = self.actions, cmap = 'coolwarm')
+        plt.colorbar(scatter, label = 'Action')
+        plt.plot(self.dates, self.normalize(self.current_price),  linestyle = '--', color = 'grey')
+        var_names.append('Actions')
+        var_names.append('Price')
+        
+        plt.legend(var_names)
+        plt.xticks(rotation=45)
+        plt.show()
+
+
+
+
+
+
+
+
 class Evaluation():
     
     def __init__(self, df, env, low_quantile = 0.25, high_quantile = 0.75, price_horizon = 96, verbose = False, start = 0, stop = 1000):
         
-        first_index = max(price_horizon, start)
+        self.first_index = max(price_horizon, start)
+        self.end_index = stop
         
         if price_horizon > start:
             print(f"Warning: start index should be at least {price_horizon}")
             
-        self.data = df[first_index:stop]
+        self.data = df[self.first_index:self.end_index]
         self.env = env
         self.low_quantile = low_quantile
         self.high_quantile = high_quantile
@@ -47,12 +279,13 @@ class Evaluation():
         self.actions = []
                 
     
+
     def rule_agent(self):
         """
         Iterate through data and take actions based on price quantiles as a function of the price horizon
         """
                 
-        obs = self.env.reset()        
+        obs, _ = self.env.reset() # Reset environment and get initial observation
 
         for price in self.data['price']:
             
@@ -87,7 +320,7 @@ class Evaluation():
         
         assert agent is not None, "Agent must be defined"
         
-        obs = self.env.reset()        
+        obs, _ = self.env.reset() # Reset environment and get initial observation
 
         for i, price in enumerate(self.data['price']):
             

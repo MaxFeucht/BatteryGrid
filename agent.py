@@ -25,7 +25,7 @@ class DDQNAgent:
         """
         
         self.env_name = env_name
-        self.env = gym.make(self.env_name)
+        self.env = gym.make(self.env_name, disable_env_checker=True)
         self.env.setup(df, price_horizon = price_horizon)
         self.device = device
         self.epsilon_decay = epsilon_decay

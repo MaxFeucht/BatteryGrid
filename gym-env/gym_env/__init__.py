@@ -6,10 +6,10 @@ register(
      entry_point="gym_env.envs:BatteryGridEnv",
 )
 
-register(
-     id="gym_env/BatteryGridCont",
-     entry_point="gym_env.envs:BatteryGridEnvCont",
-)
+# register(
+#      id="gym_env/BatteryGridCont",
+#      entry_point="gym_env.envs:BatteryGridEnvCont",
+# )
 
 
 

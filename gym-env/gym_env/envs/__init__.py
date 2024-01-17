@@ -1,2 +1,2 @@
-from gym_env.envs.battery_grid import BatteryGridEnv, BatteryGridEnvCont
+from gym_env.envs.battery_grid import BatteryGridEnv#, BatteryGridEnvCont
 

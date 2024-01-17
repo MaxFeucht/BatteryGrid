@@ -28,12 +28,16 @@ class BatteryGridEnv(gym.Env):
         # self.action_space = spaces.Box(-1, 1, dtype=float)
 
 
-    def setup(self, df, price_horizon = 96, future_horizon = 12):
-        self.prices = np.array(df['price'])  # The size of the square grid
-        self.datetime = list(df['datetime'])  # The size of the PyGame window
+    def setup(self, df, price_horizon = 96, future_horizon = 12, verbose = False, extra_penalty = False):
+        self.prices = np.array(df['price'])  
+        self.datetime = list(df['datetime'])  
         self.price_horizon = price_horizon
         self.index = price_horizon
+        
         self.future_horizon = future_horizon
+        self.extra_penalty = extra_penalty
+        self.verbose = verbose
+
     
 
     def normalize(self, var):
@@ -54,18 +58,10 @@ class BatteryGridEnv(gym.Env):
             obs_dict: dictionary of observations
         """
         
-        #price_history = self.prices[self.index-self.price_horizon:self.index]
         price_history = self.prices[(self.index - self.price_horizon + self.future_horizon) : (self.index + self.future_horizon)]
         battery_charge = self.battery_charge 
-        hour = self.datetime[self.index].hour # Shift to 6 am, such that the day is not "split" in the middle of the night
+        hour = self.datetime[self.index].hour
         day = self.datetime[self.index].day
-        
-        # Not needed anymore because we initialize the index with the price horizon
-        # if len(price_history) < self.price_horizon:
-        #     price_history = np.concatenate((np.zeros(self.price_horizon-len(price_history)), price_history))
-
-        # elif len(price_history) > self.price_horizon:
-        #     price_history = price_history[self.index-self.price_horizon:self.index] 
         
         # Normalize data
         if normalize: 
@@ -94,18 +90,22 @@ class BatteryGridEnv(gym.Env):
             
 
     
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None, options = None):
+        
         # We need the following line to seed self.np_random
         super().reset(seed=seed)
 
         # Choose the agent's location uniformly at random
         self.battery_charge = 0
         self.index = self.price_horizon
+            
         self.presence = 1
         
         obs_dict = self._get_obs()
 
-        return obs_dict
+        info = {"price_history" : self.prices[:self.index]}
+        
+        return obs_dict, info
     
 
     def reward_shaping(self, balance):
@@ -127,7 +127,10 @@ class BatteryGridEnv(gym.Env):
         # Obtain current price and hour
         current_price = self.prices[self.index]
         current_hour = self.datetime[self.index].hour        
-                
+        
+        if self.verbose:
+            print(f"Current price: {current_price}, current hour: {current_hour}, current battery charge: {self.battery_charge}, current presence: {self.presence}, current index: {self.index}\n")
+        
         # Check charge of battery for next day
         if current_hour == 7:
             if self.battery_charge < 20:
@@ -150,25 +153,43 @@ class BatteryGridEnv(gym.Env):
              
             if action < 6:  # No if statement, because we can always charge
                 kWh = (6 - action) * 5 # Discretize, such that action 0 means most discharge, i.e., kWh = (5 - 0)* 5 = 25
-                kWh  -= 2.23 if action == 0 else kWh # max = 27.77 kWh
+                kWh  -= 2.23 if action == 0 else 0 # max = 27.77 kWh
                 self.battery_charge = np.clip(self.battery_charge + kWh*0.9, 0, 50)
-                balance = -current_price * kWh * 2  
+                balance = -current_price * kWh * 2 
+                    
+                if self.verbose:
+                    print(f"Action {action}, Charging {kWh} kWh, balance: {balance}\n")
                 
             elif action > 6: 
                 kWh = (action - 6) * 5 # Discretize, such that action 10 means most discharge, i.e., kWh = (10 - 5)* 5 = 25
-                kWh  -= 2.23 if action == 12 else kWh # max = 27.77 kWh
+                kWh  -= 2.23 if action == 12 else 0 # max = 27.77 kWh
                 discharge = min(self.battery_charge , kWh) # Discharge at most action * 25, but less if battery is has less than 25 kWh
                 self.battery_charge = np.clip(self.battery_charge - discharge, 0, 50)
                 balance = current_price * discharge * 0.9
                 
+                if self.extra_penalty:
+                    # Penalty for discharging when battery is empty equal to the price of charging 1 kWh
+                    if balance == 0:
+                        balance = -current_price * np.abs(action)
+                    
+                if self.verbose:
+                    print(f"Action {action}, Charging {kWh} kWh, balance: {balance}\n")
+
             elif action == 6:
                 balance = 0
+                if self.verbose:
+                    print(f"Action {action}, balance: {balance}\n")
                 
             else:
                 raise ValueError(f"Invalid action {action}") 
 
         else:
-            balance = 0
+            if self.extra_penalty:
+                # Penalty for trying to buy or sell electricity when car is not available
+                if action != 6:
+                    balance = -current_price * np.abs(action)
+            else:
+                balance = 0
 
         # Reward shaping
         reward = self.reward_shaping(balance)
@@ -194,113 +215,3 @@ class BatteryGridEnv(gym.Env):
     
     
     
-    
-#### Continous action space ####
-    
-class BatteryGridEnvCont(gym.Env):
-    
-    def __init__(self):
-        self.index = 0
-        
-        # Observations are dictionaries with the agent's and the target's location.
-        # Each location is encoded as an element of {0, ..., `size`}^2, i.e. MultiDiscrete([size, size]).
-        self.observation_space = spaces.Dict(
-            {
-                "battery": spaces.Box(0, 50, dtype=float),
-                "prices": spaces.Box(0, np.inf, dtype=float),
-                "presence": spaces.Discrete(2),
-                "hour": spaces.Discrete(24),
-                "day": spaces.Discrete(365)
-            }
-        )
-
-        # We have 3 actions, corresponding to selling, buying and doing nothing
-        #self.action_space = spaces.Discrete(3)
-        # If continous action space: action is simply a number between -1 and 1 where -1 indicates selling and 1 indicates buying at 25 kWh - everything in between is selling / buying at a fraction of 25 kWh
-        self.action_space = spaces.Box(-1, 1, dtype=float)
-
-
-    def set_data(self, df):
-        self.prices = np.array(df['price'])  # The size of the square grid
-        self.datetime = df['datetime']  # The size of the PyGame window
-
-
-    def _get_obs(self):
-        return {"battery": self.battery_charge, "prices": self.prices[:self.index+1], "hour": self.datetime[self.index].hour, "day": self.datetime[self.index].day, "presence": self.presence}
-    
-    
-    def reset(self, seed=None, options=None):
-        # We need the following line to seed self.np_random
-        super().reset(seed=seed)
-
-        # Choose the agent's location uniformly at random
-        self.battery_charge = 0
-        self.price = 0
-        self.presence = 1
-        self.index = 0
-        
-        observation = self._get_obs()
-
-        return observation
-        
-    
-    def step(self, action):
-        # Map the action (element of {0,1,2,3}) to the direction we walk in
-        current_price = self.prices[self.index]
-        current_hour = self.datetime[self.index].hour        
-                
-        # Check charge of battery for next day
-        if current_hour == 7:
-            if self.battery_charge < 20:
-                action = 0.8 # Equals 20 kWh when normalized
-                # TODO: add penalty for trying to do anything else than charge when it is 7 and battery is not ready
-            
-        # Check availability of car during the day
-        if current_hour == 8:
-            draw = np.random.uniform(0,1)
-            self.presence = 1 if draw < 0.5 else 0
-        elif current_hour == 18:
-            if self.presence == 0:
-                self.battery_charge -= 20 # Discharge of 20 kWh if car was gone the whole day
-            self.presence = 1
-
-
-        if self.presence == 1:
-            
-            if action < 0:  
-                self.battery_charge = np.clip(self.battery_charge + 25*0.9, 0, 50)
-                reward = current_price * 25 * action * 2 
-                    
-            elif action > 0: 
-                discharge = min(self.battery_charge / 25, action) # Discharge at most action * 25, but less if battery is has less than 25 kWh
-                self.battery_charge = np.clip(self.battery_charge - 25 * discharge, 0, 50)
-                reward = current_price * 25 * discharge * 0.9
-
-            elif action == 0:
-                reward = 0
-                
-            else:
-                raise ValueError(f"Invalid action {action}")    
-        
-        else:
-            if action < 0: 
-                reward = 10*action # penalty for trying to charge when car is not available
-            elif action > 0:
-                reward = -10*action
-
-        # An episode is done iff the agent has reached the target
-        observation = self._get_obs()
-            
-        self.index += 1
-        
-        info = {}
-        
-        # Check termination
-        try:
-            p = self.prices[self.index] # check if there is a next price
-            info['p'] = p
-            terminated = False
-        except:
-            terminated = True
-
-        return observation, reward, terminated, info
