@@ -3,12 +3,13 @@ import torch.optim as optim
 
 class DQN(nn.Module):
     
-    def __init__(self, env, learning_rate, price_horizon = 96, hidden_dim = 128):
+    def __init__(self, learning_rate, price_horizon = 96, hidden_dim = 128, action_classes = 7):
         
         '''
         Params:
-        env = environment that the agent needs to play
         learning_rate = learning rate used in the update
+        hidden_dim = number of hidden units in the hidden layer
+        action_classes = number of actions that the agent can take
         '''
         
         super(DQN,self).__init__()
@@ -17,7 +18,7 @@ class DQN(nn.Module):
         self.linear1 = nn.Linear(input_features, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, hidden_dim)
         self.linear3 = nn.Linear(hidden_dim, hidden_dim)
-        self.linear4 = nn.Linear(hidden_dim, 13)
+        self.linear4 = nn.Linear(hidden_dim, action_classes)
         
         self.leakyReLU = nn.LeakyReLU()
         self.sigmoid = nn.Sigmoid()
@@ -45,8 +46,6 @@ class DQN(nn.Module):
         x = self.leakyReLU(self.linear1(x))
         x = self.leakyReLU(self.linear2(x))
         x = self.leakyReLU(self.linear3(x))
-        #x = self.softmax(self.linear4(x)) # Softmax to get a probability distribution over the actions
-        #x = self.sigmoid(self.linear4(x))
         x = self.linear4(x)
         
         return x

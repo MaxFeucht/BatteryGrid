@@ -9,8 +9,8 @@ from experience_replay import ReplayBuffer
 
 class DDQNAgent:
     
-    def __init__(self, env_name, df, device, epsilon_decay, 
-                 epsilon_start, epsilon_end, discount_rate, lr, buffer_size, price_horizon = 96, hidden_dim = 128, seed = 2705):
+    def __init__(self, env, device, epsilon_decay, 
+                 epsilon_start, epsilon_end, discount_rate, lr, buffer_size, price_horizon = 96, hidden_dim = 128, action_classes = 7, seed = 2705):
         """
         Params:
         env = environment that the agent needs to play
@@ -24,9 +24,7 @@ class DDQNAgent:
         seed = seed for random number generator for reproducibility
         """
         
-        self.env_name = env_name
-        self.env = gym.make(self.env_name, disable_env_checker=True)
-        self.env.setup(df, price_horizon = price_horizon)
+        self.env = env
         self.device = device
         self.epsilon_decay = epsilon_decay
         self.epsilon_start = epsilon_start
@@ -37,8 +35,8 @@ class DDQNAgent:
         
         #self.replay_memory = ReplayBuffer(self.env, self.buffer_size, seed = seed)
         self.dqn_index = 0
-        self.dqn_predict = DQN(self.env, self.learning_rate, price_horizon=price_horizon, hidden_dim=hidden_dim).to(self.device)
-        self.dqn_target = DQN(self.env, self.learning_rate, price_horizon=price_horizon, hidden_dim=hidden_dim).to(self.device)
+        self.dqn_predict = DQN(self.learning_rate, price_horizon=price_horizon, hidden_dim=hidden_dim, action_classes = action_classes).to(self.device)
+        self.dqn_target = DQN(self.learning_rate, price_horizon=price_horizon, hidden_dim=hidden_dim, action_classes = action_classes).to(self.device)
         self.replay_memory = ReplayBuffer(self.env, self.buffer_size, seed = seed)
         
         
@@ -66,27 +64,13 @@ class DDQNAgent:
         else:
             #Greedy action
             obs_t = torch.as_tensor(observation, dtype = torch.float32, device=self.device)
-            q_values = self.dqn_predict(obs_t)
+            q_values = self.dqn_predict(obs_t.unsqueeze(0))
         
-            #max_q_index = torch.argmax(q_values, dim = 1)[0]
-            max_q_index = torch.argmax(q_values)
-    
+            max_q_index = torch.argmax(q_values, dim = 1)[0]   
             action = max_q_index.detach().item()
-        
+    
         return action
     
-    
-    
-    def tensorize(self, obs, new_obs, action, reward, done):
-
-        obs_t = torch.as_tensor(obs, dtype = torch.float32, device=self.device)
-        new_obs_t = torch.as_tensor(new_obs, dtype = torch.float32, device=self.device)
-        action_t = torch.as_tensor(action, dtype = torch.long, device=self.device)
-        reward_t = torch.as_tensor(reward, dtype = torch.float32, device=self.device)
-        done_t = torch.as_tensor(done, dtype = torch.float32, device=self.device)
-        
-        return obs_t, new_obs_t, action_t, reward_t, done_t
-
 
 
     def DQNstep(self):
@@ -116,6 +100,7 @@ class DDQNAgent:
         Returns:
         loss = loss of the DQN
         """
+       
         
         # Sample from replay buffer
         obs, actions, rewards, terminateds, new_obs = self.replay_memory.sample(batch_size)
