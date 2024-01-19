@@ -222,7 +222,7 @@ class Plotter():
         plt.show()
         
 
-    def plot_actions(self, balance = False, battery = False, presence = False):
+    def plot_actions(self, balance = False, battery = False, absence = False):
         
         """ 
         Plots actions taken by agent
@@ -251,7 +251,7 @@ class Plotter():
             var_names.append('Battery')
             title += ' + Battery Charge' 
         
-        if presence:
+        if absence:
             for i in range(len(self.presence)):
                 if self.presence[i] == 0:
                     plt.hlines(y=0.01, xmin=self.dates[i-1], xmax=self.dates[i], color='red', linewidth = 2.5)
