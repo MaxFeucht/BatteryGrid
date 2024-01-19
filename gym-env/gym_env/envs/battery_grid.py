@@ -170,12 +170,19 @@ class BatteryGridEnv(gym.Env):
             if action < self.no_action:  # No if statement, because we can always charge
                 kWh = (self.no_action - action) * self.kWh_step # Discretize, such that action 0 means most discharge, i.e., kWh = (5 - 0)* 5 = 25
                 kWh  -= self.rest if action == 0 else 0 # max = 27.77 kWh
-                self.battery_charge = np.clip(self.battery_charge + kWh*0.9, 0, 50)
-                balance = -current_price * kWh * 2 
+                charge = min((50 - self.battery_charge) / 0.9, kWh) # Discharge at most action * 25, but less if battery is has less than 25 kWh
+                self.battery_charge = np.clip(self.battery_charge + charge*0.9, 0, 50)
+                balance = -current_price * charge * 2 
                 reward = self.reward_shaping(balance)
+                
+                if self.extra_penalty:
+                    # Penalty for charging when battery is full, equal to the price of charging 1 kWh
+                    if reward == 0:
+                        reward = -current_price * np.abs(action)
 
                 if self.verbose:
                     print(f"Action {action}, Charging {kWh} kWh, balance: {balance}\n")
+                
                 
             elif action > self.no_action and action <= (self.action_space.n - 1): 
                 kWh = (action - self.no_action) * self.kWh_step # Discretize, such that action 10 means most discharge, i.e., kWh = (10 - 5)* 5 = 25
@@ -191,7 +198,8 @@ class BatteryGridEnv(gym.Env):
                         reward = -current_price * np.abs(action)
                     
                 if self.verbose:
-                    print(f"Action {action}, Charging {kWh} kWh, balance: {balance}\n")
+                    print(f"Action {action}, Discharging {kWh} kWh, balance: {balance}\n")
+
 
             elif action == self.no_action:
                 balance = 0
