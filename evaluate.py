@@ -68,19 +68,20 @@ class RuleEvaluation():
         # Iterate through data 
         for i, price in enumerate(self.data['price']):
             
-            self.current_price.append(price)
             self.battery_charge.append(obs['battery'])
-            self.presence.append(obs['presence'])
+            self.current_price.append(obs['non_normalized_price'])
             
             action = self.rule_agent(obs, low_quantile, high_quantile) # Take action based on rule agent
             
             obs,r,t,info = self.env.step(action)
             self.actions.append(action)
+            self.presence.append(obs['presence'])
             self.balance.append(info['balance'])
             
             if t:
                 self.data = self.data[:i+1] # Cut data to match length of episode for plotting
                 assert len(self.data) == len(self.balance), f"Data and balance should have same length, {len(self.data)} != {len(self.balance)}"
+                print("Absolute Balance: ", np.sum(self.balance))
                 break
         
         
@@ -119,19 +120,20 @@ class DDQNEvaluation():
         # Iterate through data
         for i, price in enumerate(self.data['price']):
             
-            self.current_price.append(price)
+            self.current_price.append(obs['non_normalized_price'])
             self.battery_charge.append(obs['battery'])
-            self.presence.append(obs['presence'])
-            
+
             action = agent.choose_action(i, obs['tensor'], greedy = True)
 
             obs,r,t,info = self.env.step(action)
             self.actions.append(action)
+            self.presence.append(obs['presence'])
             self.balance.append(info['balance'])
                 
             if t:
                 self.data = self.data[:i+1] # Cut data to match length of episode for plotting
                 assert len(self.data) == len(self.balance), f"Data and balance should have same length, {len(self.data)} != {len(self.balance)}"
+                print("Absolute Balance: ", np.sum(self.balance))
                 break
 
 
@@ -149,8 +151,10 @@ class Plotter():
         self.current_price = self.evaluator.current_price[range[0]:range[1]]
         self.actions = self.evaluator.actions[range[0]:range[1]]
         self.presence = self.evaluator.presence[range[0]:range[1]]
+        
+        self.agent_name = '\n' + self.evaluator.__class__.__name__.replace('Evaluation','') + '-Agent: '
 
-    
+
     def normalize(self, data):
         """
         Helper function to normalize data
@@ -185,7 +189,8 @@ class Plotter():
             plt.plot(self.dates, var)
             
         plt.xticks(rotation=45)
-        plt.legend(var_names)
+        plt.legend(var_names, loc = 'lower right')
+        plt.title(self.agent_name + 'Price, Reward, and Battery Charge\n', size = 14)
         plt.show()
         
         
@@ -211,13 +216,13 @@ class Plotter():
                 
             plt.subplot(2,2,i+1)
             plt.plot(self.dates, var, color = cols[i])
-            plt.title(var_names[i])
+            plt.title(self.agent_name + var_names[i])
             plt.xticks(rotation=45)
                 
         plt.show()
         
 
-    def plot_actions(self, balance = False, battery = False, presence = False):
+    def plot_actions(self, balance = False, battery = False, absence = False):
         
         """ 
         Plots actions taken by agent
@@ -226,172 +231,39 @@ class Plotter():
         plt.figure(figsize=(15,5))        
 
         var_names = []
-        
-        if presence:
-            plt.plot(self.dates, self.normalize(self.presence), color = 'green', alpha = 0.8)
-            var_names.append('Presence')
-        
-        if balance:
-            plt.plot(self.dates, self.normalize(self.balance), color = 'black', alpha = 0.8)
-            var_names.append('Balance')
-        
-        if battery:
-            plt.plot(self.dates, self.normalize(self.battery_charge), color = 'orange', alpha = 0.8)
-            var_names.append('Battery')
-        
+
         scatter = plt.scatter(self.dates, self.normalize(self.current_price), c = self.actions, cmap = 'coolwarm')
-        plt.colorbar(scatter, label = 'Action')
+        cbar = plt.colorbar(scatter)
+        cbar.set_label('Action',rotation=270)
         plt.plot(self.dates, self.normalize(self.current_price),  linestyle = '--', color = 'grey')
         var_names.append('Actions')
         var_names.append('Price')
         
-        plt.legend(var_names)
+        title = self.agent_name + 'Price & Actions'
+        
+        if balance:
+            plt.plot(self.dates, self.normalize(self.balance), color = 'orange', alpha = 0.8)
+            var_names.append('Balance')
+            title += ' + Balance'
+        
+        if battery:
+            plt.plot(self.dates, self.normalize(self.battery_charge), color = 'green', alpha = 0.8)
+            var_names.append('Battery')
+            title += ' + Battery Charge' 
+        
+        if absence:
+            for i in range(len(self.presence)):
+                if self.presence[i] == 0:
+                    plt.hlines(y=0.01, xmin=self.dates[i-1], xmax=self.dates[i], color='red', linewidth = 2.5)
+            
+            var_names.append('Absence')
+            title += ' + Absence'
+        
+        plt.legend(var_names, loc = 'lower right')
         plt.xticks(rotation=45)
+        plt.title(title + '\n', size = 14)
         plt.show()
 
 
 
 
-
-
-
-
-class Evaluation():
-    
-    def __init__(self, df, env, low_quantile = 0.25, high_quantile = 0.75, price_horizon = 96, verbose = False, start = 0, stop = 1000):
-        
-        self.first_index = max(price_horizon, start)
-        self.end_index = stop
-        
-        if price_horizon > start:
-            print(f"Warning: start index should be at least {price_horizon}")
-            
-        self.data = df[self.first_index:self.end_index]
-        self.env = env
-        self.low_quantile = low_quantile
-        self.high_quantile = high_quantile
-        self.price_horizon = price_horizon
-        self.verbose = verbose
-        
-        self.current_price = []
-        self.battery_charge = []
-        self.balance = []
-        self.actions = []
-                
-    
-
-    def rule_agent(self):
-        """
-        Iterate through data and take actions based on price quantiles as a function of the price horizon
-        """
-                
-        obs, info = self.env.reset() # Reset environment and get initial observation
-
-        for price in self.data['price']:
-            
-            if obs['prices'][-1] < np.quantile(obs['prices'][-self.price_horizon:], self.low_quantile):
-                action = 0
-            elif obs['prices'][-1] > np.quantile(obs['prices'][-self.price_horizon:], self.low_quantile) and obs['prices'][-1] < np.quantile(obs['prices'][-self.price_horizon:], self.high_quantile):
-                action = 6
-            elif obs['prices'][-1] >  np.quantile(obs['prices'][-self.price_horizon:], self.high_quantile):
-                action = 12
-            else:
-                action = np.random.randint(0,12)
-            
-            self.current_price.append(price)
-            obs,r,t,info =self.env.step(action)
-            
-            self.battery_charge.append(obs['battery'])
-            self.balance.append(info['balance'])
-            
-            if t:
-                break
-        
-        
-        
-    
-    def ddqn_agent(self, agent = None):
-        """Function to iterate through data and take actions based on agent policy
-
-        Args:
-            iterations (int, optional): _description_. Defaults to 1000.
-            agent (_type_, optional): _description_. Defaults to None.
-        """
-        
-        assert agent is not None, "Agent must be defined"
-        
-        obs, _ = self.env.reset() # Reset environment and get initial observation
-
-        for i, price in enumerate(self.data['price']):
-            
-            action = agent.choose_action(i, obs['tensor'], greedy = True)
-            self.current_price.append(price)
-            obs,r,t,info = self.env.step(action)
-            
-            self.actions.append(action)
-            self.battery_charge.append(obs['battery'])
-            self.balance.append(info['balance'])
-                
-            if t:
-                self.end_index = i
-                break
-
-    
-    
-    def normalize(self, data):
-        """
-        Helper function to normalize data
-        """
-        return ((data - np.min(data)) / (np.max(data) - np.min(data)))
-    
-    
-        
-    def plot_all(self, cum = False, normalize = True):
-        
-        """ 
-        Plots battery charge, reward, price, and cumulative reward (if cum = True) in one combined plot
-        """
-        
-        plt.figure(figsize=(15,5))
-        
-        vars = [self.battery_charge, self.balance, self.current_price]
-        var_names = ['Battery Charge', 'Reward', 'Price']
-        
-        if cum: 
-            self.cumulative_balance = np.cumsum(self.balance)
-            vars.append(self.cumulative_balance)
-            var_names.append('Cumulative Reward')
-      
-        for var in vars:
-            if normalize and var != self.current_price:
-                var = self.normalize(np.array(var))
-            plt.plot(self.data['datetime'][:self.end_index], var)
-            
-        plt.xticks(rotation=45)
-        plt.legend(var_names)
-        plt.show()
-        
-        
-
-    def plot_single(self, normalize = True):
-            
-        """ 
-        Plots battery charge, balance, price, and cumulative balance in single subplots
-        """
-
-        plt.figure(figsize=(15,10))
-        self.cumulative_balance = np.cumsum(self.balance)
-        vars = [self.battery_charge, self.balance, self.current_price, self.cumulative_balance]
-        var_names = ['Battery Charge', 'Reward', 'Price', 'Cumulative Reward']
-        cols = ['blue', 'red', 'green', 'orange']
-        
-        for i, var in enumerate(vars):
-            if normalize:
-                var = self.normalize(np.array(var))
-            plt.subplot(2,2,i+1)
-            plt.plot(self.data['datetime'], var, color = cols[i])
-            plt.title(var_names[i])
-            plt.xticks(rotation=45)
-            
-        plt.show()
-        
