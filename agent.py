@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import gymnasium as gym
 import numpy as np
 import random 
+import math
 
 from dqn import DQN, TemporalDQN
 from experience_replay import ReplayBuffer
@@ -134,5 +135,7 @@ class TemporalDDQNAgent(DDQNAgent):
                  price_horizon = 96, action_classes = 7, *args, **kwargs):
         super().__init__(hidden_dim=lin_hidden_dim, *args, **kwargs)
         
-        self.dqn_predict = TemporalDQN(self.learning_rate, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, temp_hidden_dim = temp_hidden_dim, kernel_size = kernel_size, dropout=dropout).to(self.device)
-        self.dqn_target = TemporalDQN(self.learning_rate, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, temp_hidden_dim = temp_hidden_dim, kernel_size = kernel_size, dropout = dropout).to(self.device)
+        num_layers = math.ceil(math.log2(price_horizon/kernel_size) + 1)
+        
+        self.dqn_predict = TemporalDQN(self.learning_rate, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, temp_hidden_dim = temp_hidden_dim, kernel_size = kernel_size, num_layers = num_layers, dropout=dropout).to(self.device)
+        self.dqn_target = TemporalDQN(self.learning_rate, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, temp_hidden_dim = temp_hidden_dim, kernel_size = kernel_size, num_layers = num_layers, dropout = dropout).to(self.device)
