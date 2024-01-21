@@ -28,6 +28,7 @@ class BatteryGridEnv(gym.Env):
         # self.action_space = spaces.Box(-1, 1, dtype=float)
 
 
+
     def setup(self, df, price_horizon = 96, future_horizon = 0, action_classes = 7, verbose = False, extra_penalty = False):
         self.prices = np.array(df['price'])  
         self.datetime = list(df['datetime'])  
@@ -59,7 +60,7 @@ class BatteryGridEnv(gym.Env):
 
 
 
-    def _get_obs(self, normalize = True):
+    def _get_obs(self, normalize=True):
         """Function to get the observation of the environment
 
         Args:
@@ -68,43 +69,48 @@ class BatteryGridEnv(gym.Env):
         Returns:
             obs_dict: dictionary of observations
         """
-        
-        price_history = self.prices[(self.index - self.price_horizon + self.future_horizon) : (self.index + self.future_horizon)]
-        battery_charge = self.battery_charge 
+
+        price_history = self.prices[(self.index - self.price_horizon + self.future_horizon):(self.index + self.future_horizon)]
+        battery_charge = self.battery_charge
         hour = self.datetime[self.index].hour
         day = self.datetime[self.index].day
-        
+
         non_normalized_price = price_history[-1]
-        
+
         # Normalize data
-        if normalize: 
+        if normalize:
             price_history = self.normalize(price_history)
-            battery_charge = (battery_charge) / 50
-            hour = (hour) / 24 
-            day = (day) / 365
-            
-        obs_dict = {"battery": battery_charge,"prices": price_history, "hour": hour, "day": day, "presence": self.presence}
-        obs_dict["tensor"] = self.dict_to_tensor(obs_dict)
-        obs_dict["non_normalized_price"] = non_normalized_price
-        
+            battery_charge /= 50
+            hour /= 24
+            day /= 365
+
+        obs_dict = {
+            "battery": battery_charge,
+            "prices": price_history,
+            "hour": hour,
+            "day": day,
+            "presence": self.presence,
+            "tensor": np.concatenate((price_history, np.array([battery_charge, hour, day, self.presence]))),
+            "non_normalized_price": non_normalized_price
+        }
+
         return obs_dict
 
-
-
-    def dict_to_tensor(self, obs_dict):
-        
-        tensor = np.array([])
-        for k,v in obs_dict.items():
-            if k == "prices":
-                tensor = np.concatenate((tensor, v))
-            else:
-                tensor = np.concatenate((tensor, np.array([v])))
-                            
-        return tensor
             
 
     
     def reset(self, seed=None, options = None):
+        """
+        Resets the environment to its initial state.
+        
+        Parameters:
+            seed (int): The random seed for reproducibility.
+            options (dict): Additional options for resetting the environment.
+        
+        Returns:
+            obs_dict (dict): The initial observation of the environment.
+            info (dict): Additional information about the environment state.
+        """
         
         # We need the following line to seed self.np_random
         super().reset(seed=seed)
@@ -121,123 +127,145 @@ class BatteryGridEnv(gym.Env):
         
         return obs_dict, info
     
+    
+    
+    def perform_action(self, action, current_price):
+        """
+        Perform the specified action on the battery grid environment.
 
-    def reward_shaping(self, balance):
+        Parameters:
+            action (int): The action to be performed.
+            current_price (float): The current price of electricity.
+
+        Returns:
+            reward (float): The reward obtained from performing the action.
+            balance (float): The balance obtained from performing the action.
+        """
         
-        # Relative balance
-        # short_term_window = self.prices[self.index - 24 : self.index]
-        # rel_balance = balance / np.mean(balance_history)
-        
-        # Combining balance and relative price
-        # reward = balance * 0.5 + rel_balance
+        kWh = (abs(self.no_action - action) * self.kWh_step) # kWh that is charged / discharged
+        kWh -= self.rest if action == 0 or action == (self.action_space.n - 1) else 0 # Subtract rest if we are at the maximum or minimum action
+
+        if action < self.no_action:  # Charging
+            charge = min((50 - self.battery_charge) / 0.9, kWh)
+            self.battery_charge = np.clip(self.battery_charge + charge*0.9, 0, 50)
+            balance = -current_price * charge * 2 
+            action_type = "Charging"
+        elif action > self.no_action and action <= (self.action_space.n - 1):  # Discharging
+            discharge = min(self.battery_charge , kWh)
+            self.battery_charge = np.clip(self.battery_charge - discharge, 0, 50)
+            balance = current_price * discharge * 0.9
+            action_type = "Discharging"
+        elif action == self.no_action:  # No action
+            balance = 0
+            action_type = "No action"
+        else:
+            raise ValueError(f"Invalid action {action}") 
+
+        reward = self.reward_shaping(action, balance, current_price)
+
+        if self.verbose:
+            print(f"Action {action}, {action_type} {kWh if action_type != 'No action' else ''} kWh, balance: {balance}\n")
+            
+        return reward, balance
+
+
+    def reward_shaping(self, action, balance, current_price):
+        """
+        Calculates the reward for a given action in the battery grid environment.
+
+        Parameters:
+            action (int): The action taken in the environment.
+            balance (float): The current balance in the environment after taken action.
+            current_price (float): The current price in the environment.
+            extra_penalty (bool): Flag indicating whether to apply an extra penalty.
+
+        Returns:
+            float: The calculated reward.
+        """
         
         reward = balance
-        
+        if self.extra_penalty and reward == 0 and action != self.no_action:
+            reward = -current_price 
         return reward
-        
     
-    def step(self, action):
+    
+    def determine_availibility(self, current_hour):
+        """
+        Determines the availability of the car at the given hour.
+
+        Args:
+            current_hour (int): The current hour of the day.
+
+        Returns:
+            None
+        """
         
-        # Obtain current price and hour
-        current_price = self.prices[self.index]
-        current_hour = self.datetime[self.index].hour        
-        
-        if self.verbose:
-            print(f"Current price: {current_price}, current hour: {current_hour}, current battery charge: {self.battery_charge}, current presence: {self.presence}, current index: {self.index}\n")
-        
-        # Check charge of battery for next day
-        if current_hour == 7:
-            if self.battery_charge < 20:
-                action = self.no_action - np.ceil(((20 - self.battery_charge)/(0.9*self.kWh_step)))
-                
-                if self.verbose:
-                    print(f"FORCED RECHARGE: Charge: {self.battery_charge}, need to charge {20 - self.battery_charge}, Charging {(self.no_action - action) * self.kWh_step} kWh with action {action}\n")
-            
-        
-        # Check availability of car during the day
-        if current_hour == 8:
+        if current_hour == 8: # Car leaves at 8
             draw = np.random.uniform(0,1)
             self.presence = 1 if draw < 0.5 else 0
-        elif current_hour == 18:
+            
+        elif current_hour == 18: # Car arrives at 18
             if self.presence == 0:
-                self.battery_charge -= 20 # Discharge of 20 kWh if car was gone the whole day
+                self.battery_charge -= 20 # Discharge of 20 kWh if car was gone 
             self.presence = 1
+    
 
+    def step(self, action):
+        """
+        Executes a single step in the environment.
+
+        Args:
+            action (float): The action to take in the environment.
+
+        Returns:
+            observation (numpy.ndarray): The current observation of the environment.
+            reward (float): The reward obtained from the action.
+            terminated (bool): Whether the episode is terminated or not.
+            info (dict): Additional information about the step.
+        """
+    
+        # Obtain current price and hour
+        current_price = self.prices[self.index]
+        current_hour = self.datetime[self.index].hour
+
+        if self.verbose:
+            print(f"Current price: {current_price}, current hour: {current_hour}, current battery charge: {self.battery_charge}, current presence: {self.presence}, current index: {self.index}\n")
+
+        # Check charge of battery for next day
+        if current_hour == 7 and self.battery_charge < 20:
+            action = self.no_action - np.ceil(((20 - self.battery_charge) / (0.9 * self.kWh_step)))
+
+            if self.verbose:
+                print(f"FORCED RECHARGE: Charge: {self.battery_charge}, need to charge {20 - self.battery_charge}, Charging {(self.no_action - action) * self.kWh_step} kWh with action {action}\n")
+
+        # Determine availability of car
+        self.determine_availibility(current_hour)
 
         # If car present, take action
         if self.presence == 1:
-
-            if action < self.no_action:  # No if statement, because we can always charge
-                kWh = (self.no_action - action) * self.kWh_step # Discretize, such that action 0 means most discharge, i.e., kWh = (5 - 0)* 5 = 25
-                kWh  -= self.rest if action == 0 else 0 # max = 27.77 kWh
-                charge = min((50 - self.battery_charge) / 0.9, kWh) # Discharge at most action * 25, but less if battery is has less than 25 kWh
-                self.battery_charge = np.clip(self.battery_charge + charge*0.9, 0, 50)
-                balance = -current_price * charge * 2 
-                reward = self.reward_shaping(balance)
-                
-                if self.extra_penalty:
-                    # Penalty for charging when battery is full, equal to the price of charging 1 kWh
-                    if reward == 0:
-                        reward = -current_price * np.abs(action)
-
-                if self.verbose:
-                    print(f"Action {action}, Charging {kWh} kWh, balance: {balance}\n")
-                
-                
-            elif action > self.no_action and action <= (self.action_space.n - 1): 
-                kWh = (action - self.no_action) * self.kWh_step # Discretize, such that action 10 means most discharge, i.e., kWh = (10 - 5)* 5 = 25
-                kWh  -= self.rest if action == (self.action_space.n - 1) else 0 # max = 27.77 kWh
-                discharge = min(self.battery_charge , kWh) # Discharge at most action * 25, but less if battery is has less than 25 kWh
-                self.battery_charge = np.clip(self.battery_charge - discharge, 0, 50)
-                balance = current_price * discharge * 0.9
-                reward = self.reward_shaping(balance)
-
-                if self.extra_penalty:
-                    # Penalty for discharging when battery is empty equal to the price of charging 1 kWh
-                    if reward == 0:
-                        reward = -current_price * np.abs(action)
-                    
-                if self.verbose:
-                    print(f"Action {action}, Discharging {kWh} kWh, balance: {balance}\n")
-
-
-            elif action == self.no_action:
-                balance = 0
-                reward = self.reward_shaping(balance)
-                if self.verbose:
-                    print(f"Action {action}, balance: {balance}\n")
-                
-            else:
-                raise ValueError(f"Invalid action {action}") 
-
+            reward, balance = self.perform_action(action, current_price)
         else:
             balance = 0
-            reward = self.reward_shaping(balance)
-            
-            if self.extra_penalty:
-                # Penalty for trying to buy or sell electricity when car is not available
-                if action != self.no_action:
-                    reward = -current_price * np.abs(action)
-
+            reward = self.reward_shaping(action, balance, current_price)
 
         # Obtain observation
-        observation = self._get_obs(normalize = True)
-        info = {"price_history" : self.prices[:self.index],
-                "balance": balance}
-        
+        observation = self._get_obs(normalize=True)
+        info = {
+            "price_history": self.prices[:self.index],
+            "balance": balance
+        }
+
         # Increase index
         self.index += 1
-        
+
         # Check termination
-        try:
-            p = self.prices[self.index + self.future_horizon] # check if there is a next  (within horizon)
-            terminated = False
-        except:
+        terminated = False
+        if self.index + self.future_horizon >= len(self.prices):
             terminated = True
 
         return observation, reward, terminated, info
-    
-    
-    
+        
+        
+        
     
     
