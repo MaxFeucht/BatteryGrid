@@ -59,6 +59,17 @@ class BatteryGridEnv(gym.Env):
         return (var - np.min(var)) / (np.max(var) - np.min(var))
 
 
+    def get_season(self, date):
+        month = date.month
+        if month in [3, 4, 5]:
+            return 1
+        elif month in [6, 7, 8]:
+            return 2
+        elif month in [9, 10, 11]:
+            return 3
+        else:
+            return 4
+
 
     def _get_obs(self, normalize=True):
         """Function to get the observation of the environment
@@ -74,6 +85,8 @@ class BatteryGridEnv(gym.Env):
         battery_charge = self.battery_charge
         hour = self.datetime[self.index].hour
         day = self.datetime[self.index].day
+        weekday = self.datetime[self.index].weekday()
+        season = self.get_season(self.datetime[self.index])
 
         non_normalized_price = price_history[-1]
 
@@ -82,15 +95,19 @@ class BatteryGridEnv(gym.Env):
             price_history = self.normalize(price_history)
             battery_charge /= 50
             hour /= 24
-            day /= 365
+            day /= 31
+            weekday /= 7
+            season /= 4
 
         obs_dict = {
             "battery": battery_charge,
             "prices": price_history,
             "hour": hour,
             "day": day,
+            "weekday": weekday,
+            "season": season,
             "presence": self.presence,
-            "tensor": np.concatenate((price_history, np.array([battery_charge, hour, day, self.presence]))),
+            "tensor": np.concatenate((price_history, np.array([battery_charge, hour, day, weekday, season, self.presence]))),
             "non_normalized_price": non_normalized_price
         }
 

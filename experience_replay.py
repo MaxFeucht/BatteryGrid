@@ -27,7 +27,7 @@ class ReplayBuffer:
         for _ in range(self.min_replay_size):
             
             action = env.action_space.sample()
-            new_obs,r,terminated,info = env.step(action)
+            new_obs, r, terminated, _ = env.step(action)
 
             transition = (obs['tensor'], action, r, terminated, new_obs['tensor'])
             self.replay_buffer.append(transition)
@@ -45,6 +45,7 @@ class ReplayBuffer:
         self.replay_buffer.append(data)
 
 
+
     def sample(self, batch_size):
         
         '''
@@ -55,8 +56,18 @@ class ReplayBuffer:
         tensor of observations, actions, rewards, dones (boolean) and new_observations 
         '''
         
+        if len(self.replay_buffer) < batch_size:
+            raise ValueError("Not enough data in the replay buffer.")
+        
+        # Sample random transitions
         transitions = random.sample(self.replay_buffer, batch_size)
         
+        # Add last transition to the sample to make sure that the last two (current) transitions are included in the sample --> MIXED TRAINING / PRIORITIZED EXPERIENCE REPLAY
+        transitions[-1] = self.replay_buffer[-1] 
+        
+        # Shuffle transitions
+        random.shuffle(transitions)
+                
         observations = np.asarray([t[0] for t in transitions])
         actions = np.asarray([t[1] for t in transitions])
         rewards = np.asarray([t[2] for t in transitions])

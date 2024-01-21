@@ -48,6 +48,7 @@ class TemporalBlock(nn.Module):
         self.relu = nn.ReLU()
         self.init_weights()
 
+
     def init_weights(self):
         """
         Initializes the weights of the convolutional layers.
@@ -56,6 +57,7 @@ class TemporalBlock(nn.Module):
         self.conv2.weight.data.normal_(0, 0.01)
         if self.downsample is not None:
             self.downsample.weight.data.normal_(0, 0.01)
+
 
     def forward(self, x):
         """
@@ -157,6 +159,7 @@ class TemporalConvNet(nn.Module):
         
     def forward(self, x):
         return self.network(x)
+
 
 
 class TCN(nn.Module):
