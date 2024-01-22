@@ -16,7 +16,7 @@ class DQN(nn.Module):
         '''
         
         super(DQN,self).__init__()
-        input_features = price_horizon + 1 + 1 + 1 + 1 #battery charge, price, presence, day, hour
+        input_features = price_horizon + 1 + 1 + 1 + 1 + 1 + 1 #battery charge, price, presence, day, hour
                 
         self.linear1 = nn.Linear(input_features, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, hidden_dim)
@@ -57,7 +57,7 @@ class DQN(nn.Module):
     
 class TemporalDQN(nn.Module):
     
-    def __init__(self, learning_rate, price_horizon = 96, action_classes = 7, lin_hidden_dim = 128, temp_hidden_dim = 64, kernel_size = 2, dropout = 0.2):
+    def __init__(self, learning_rate, price_horizon = 96, action_classes = 7, lin_hidden_dim = 128, temp_hidden_dim = 64, kernel_size = 2,  num_layers = 4, dropout = 0.2):
         
         '''
         Params:
@@ -68,9 +68,9 @@ class TemporalDQN(nn.Module):
         
         super(TemporalDQN, self).__init__()
         self.price_horizon = price_horizon
-        self.input_features = self.price_horizon + 1 + 1 + 1 + 1 #battery charge, price, presence, day, hour
+        self.input_features = self.price_horizon + 1 + 1 + 1 + 1 + 1 + 1 #battery charge, price, presence, day, hour, weekday, season
         
-        tcn_channels = [price_horizon, temp_hidden_dim] # First layer has price_horizon channels, second layer has temp_hidden_dim channels to match the input of dimension price_horizon
+        tcn_channels = [temp_hidden_dim] * num_layers # First layer has price_horizon channels, second layer has temp_hidden_dim channels to match the input of dimension price_horizon
         self.tcn = TCN(seq_len = price_horizon, num_inputs = 1, num_channels=tcn_channels, out_channels=temp_hidden_dim, kernel_size=kernel_size, dropout=dropout) # 3 layers with 128 hidden units each
         
         self.linear1 = nn.Linear(self.input_features - self.price_horizon, int(lin_hidden_dim/4))

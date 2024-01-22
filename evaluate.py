@@ -11,21 +11,6 @@ import matplotlib.pyplot as plt
 import gym_env
 
 
-def elongate(df):
-    df_long = pd.wide_to_long(df, i = "PRICES", j = "hour", stubnames=["Hour"], sep = " ").reset_index()
-    df_long.rename(columns={"Hour": "price", "PRICES": "date"}, inplace = True)
-    df_long['datetime'] = pd.to_datetime(df_long['date']) + pd.to_timedelta(df_long['hour'], unit='h')
-    df_long.sort_values(['datetime'], ascending=[True], inplace=True)
-    df_long['price'] = df_long['price'].astype(float) / 1000 # Convert price per MWh to price per KWh
-    return df_long.reset_index(drop=True)
-
-train = elongate(pd.read_excel('data/train.xlsx'))
-val = elongate(pd.read_excel('data/validate.xlsx'))
-
-env = gym.make('gym_env/BatteryGrid-v0')
-env.setup(train, price_horizon=24)
-
-
 
 
 
@@ -135,6 +120,7 @@ class RuleEvaluation():
         print("R2 score: ", r2)
         self.model = model
         return model
+
         
     
     def regression_strategy(self, obs):
