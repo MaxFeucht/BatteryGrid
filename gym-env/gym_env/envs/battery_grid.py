@@ -29,12 +29,17 @@ class BatteryGridEnv(gym.Env):
 
 
 
-    def setup(self, df, price_horizon = 96, future_horizon = 0, action_classes = 7, verbose = False, extra_penalty = False):
-        self.prices = np.array(df['price'])  
+    def setup(self, df, features, price_horizon = 96, future_horizon = 0, action_classes = 7, normalize = True, extra_penalty = False, verbose = False, ):
+        self.prices = np.array(df['price'], dtype=np.float32)  
         self.datetime = list(df['datetime'])  
         self.price_horizon = price_horizon
         self.index = price_horizon
         self.action_space = spaces.Discrete(action_classes)
+        self.features = np.array(features)
+        self.normalize = normalize
+        
+        # Normalize features per column (feature) but not datetime and price in the first two columns
+        self.features[:,2:] = self.normalize_data(self.features[:,2:], axis=0) # Normalize features per column (feature) 
         
         # Calculate steps for discretization           
         self.no_action = np.floor(self.action_space.n / 2) # Action where we do nothing
@@ -47,31 +52,28 @@ class BatteryGridEnv(gym.Env):
         
         print("Setup with price horizon: ", self.price_horizon, " and future horizon: ", self.future_horizon, " and action space: ", self.action_space.n)
         
-        if verbose:
+        if self.verbose:
             print("Action space: ", self.action_space, "with no action: ", self.no_action, ", kWh step: ", self.kWh_step, " and rest: ", self.rest)
 
     
 
-    def normalize(self, var):
+    def normalize_data(self, var, axis=None):
         """
         Helper function to normalize data between 0 and 1
         """
-        return (var - np.min(var)) / (np.max(var) - np.min(var))
-
-
-    def get_season(self, date):
-        month = date.month
-        if month in [3, 4, 5]:
-            return 1
-        elif month in [6, 7, 8]:
-            return 2
-        elif month in [9, 10, 11]:
-            return 3
+        
+        if not self.normalize:
+            return var
+        
+        if axis is None:
+            return (var - np.min(var)) / (np.max(var) - np.min(var))
+    
         else:
-            return 4
+            return (var - np.min(var, axis=axis)) / (np.max(var, axis=axis) - np.min(var, axis=axis))
 
 
-    def _get_obs(self, normalize=True):
+
+    def _get_obs(self):
         """Function to get the observation of the environment
 
         Args:
@@ -83,31 +85,30 @@ class BatteryGridEnv(gym.Env):
 
         price_history = self.prices[(self.index - self.price_horizon + self.future_horizon):(self.index + self.future_horizon)]
         battery_charge = self.battery_charge
-        hour = self.datetime[self.index].hour
-        day = self.datetime[self.index].day
-        weekday = self.datetime[self.index].weekday()
-        season = self.get_season(self.datetime[self.index])
-
+        features = self.features[self.index-1]
+                
+        # Get date and prices for assertions between features and observation price
+        feature_date = features[0]
+        features = np.array(features[1:], dtype=np.float32)
+        feature_price = features[0]
+        features = features[1:] #by doing two times features[1:] we remove the date and price from the features array (not elegant but works)
         non_normalized_price = price_history[-1]
-
+        
+        assert self.datetime[self.index-1] == feature_date, "Datetime and features do not match"
+        assert price_history[-1] == feature_price, "Price history ({price_history[-1]}) and price (feature_price)do not match"
+        
         # Normalize data
-        if normalize:
-            price_history = self.normalize(price_history)
+        if self.normalize:
+            price_history = self.normalize_data(price_history)
             battery_charge /= 50
-            hour /= 24
-            day /= 31
-            weekday /= 7
-            season /= 4
+            # features are already normalized in the setup function
 
         obs_dict = {
             "battery": battery_charge,
             "prices": price_history,
-            "hour": hour,
-            "day": day,
-            "weekday": weekday,
-            "season": season,
             "presence": self.presence,
-            "tensor": np.concatenate((price_history, np.array([battery_charge, hour, day, weekday, season, self.presence]))),
+            "features": features,
+            "tensor": np.concatenate((price_history, np.array([battery_charge, self.presence]), features)),
             "non_normalized_price": non_normalized_price
         }
 
@@ -242,8 +243,9 @@ class BatteryGridEnv(gym.Env):
         """
     
         # Obtain current price and hour
-        current_price = self.prices[self.index]
-        current_hour = self.datetime[self.index].hour
+        current_price = self.prices[self.index-1]
+        current_hour = self.datetime[self.index-1].hour
+
 
         if self.verbose:
             print(f"Current price: {current_price}, current hour: {current_hour}, current battery charge: {self.battery_charge}, current presence: {self.presence}, current index: {self.index}\n")
@@ -266,11 +268,14 @@ class BatteryGridEnv(gym.Env):
             reward = self.reward_shaping(action, balance, current_price)
 
         # Obtain observation
-        observation = self._get_obs(normalize=True)
+        observation = self._get_obs()
         info = {
             "price_history": self.prices[:self.index],
             "balance": balance
         }
+
+        # Assert current price and observation price are the same
+        assert current_price == observation["non_normalized_price"], "Current price and observation price are not the same"
 
         # Increase index
         self.index += 1
