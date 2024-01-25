@@ -49,37 +49,41 @@ class DDQNAgent:
         self.price_history = deque(maxlen=price_horizon)
 
         # Normalize features per column (feature) but not datetime and price in the first two columns
+        self.grads = self.features[:,[11, 13, 15, 17, 19, 21, 23]] * 1e-3 # Get gradient features for reward shaping, divide by 1000 to bring gradient on same level as reward
         self.features[:,2:] = self.normalize_data(self.features[:,2:], axis=0) if self.normalize else self.features[:,2:] # Normalize features per column (feature) 
-        
+
         feature_dim = features.shape[1] - 2 # -2 because we don't want to include the datetime and price columns
         print("Number of engineered features: ", feature_dim)
         
         self.state_dim = price_horizon + feature_dim + 1 + 1 # price history + engineered features + battery level + car availability
         print("State dimension: ", self.state_dim)
         
-        #self.replay_memory = ReplayBuffer(self.env, self.buffer_size, seed = seed)
         self.dqn_index = 0
         self.dqn_predict = DQN(self.learning_rate, feature_dim=feature_dim, price_horizon=self.price_horizon, hidden_dim=hidden_dim, action_classes = action_classes).to(self.device)
         self.dqn_target = DQN(self.learning_rate, feature_dim=feature_dim, price_horizon=self.price_horizon, hidden_dim=hidden_dim, action_classes = action_classes).to(self.device)
-        self.replay_memory = ReplayBuffer(self.env, state_dim = self.state_dim, buffer_size = self.buffer_size, action_classes = action_classes, seed = seed, state_func=self.obs_to_state, action_func=self.action_to_cont) # State function is used to transform the observation to the state of the environment
+        self.dqn_target.load_state_dict(self.dqn_predict.state_dict())  # Initialize target network with the same parameters as the predict network
+        self.replay_memory = ReplayBuffer(self.env, state_dim = self.state_dim, buffer_size = self.buffer_size, action_classes = action_classes, seed = seed, state_func=self.obs_to_state, action_func=self.action_to_cont, reward_func = self.shape_reward) # State function is used to transform the observation to the state of the environment
         
 
+
+
     def normalize_data(self, var, axis=None):
-        """
-        Helper function to normalize data between 0 and 1
-        """
+            """
+            Helper function to normalize data between 0 and 1
+            """
+            
+            if not self.normalize:
+                return var
+            
+            if axis is None:
+                return (var - np.min(var)) / (np.max(var) - np.min(var))
         
-        if not self.normalize:
-            return var
-        
-        if axis is None:
-            return (var - np.min(var)) / (np.max(var) - np.min(var))
-    
-        else:
-            return (var - np.min(var, axis=axis)) / (np.max(var, axis=axis) - np.min(var, axis=axis))
+            else:
+                return (var - np.min(var, axis=axis)) / (np.max(var, axis=axis) - np.min(var, axis=axis))
         
     
     
+
     def obs_to_state(self, obs):
         """
         Matches the observation to the state of the environment. A state is defined as the price history with a determined horizon, the battery level, 
@@ -109,15 +113,12 @@ class DDQNAgent:
         feature_price = features[0]
         features = features[1:] #by doing two times features[1:] we remove the date and price from the features array (not elegant but works)
         
-        date = datetime.datetime(int(obs[6]), 1, 1) + datetime.timedelta(days=int(obs[4]), hours=int(obs[2])) # Needed to get the correct date from day of year and hour of day
-        #print(date)
-        #print(feature_date)
-                
-        # assert obs[2] == feature_date.hour, "Hour and features do not match"
-        # assert obs[3] == feature_date.dayofweek, "Day of week and features do not match"
-        # assert obs[4] == feature_date.dayofyear, "Day of year and features do not match"
-        # assert obs[5] == feature_date.month, "Month and features do not match"
-        # assert obs[6] == feature_date.year, "Year and features do not match"
+        date = datetime.datetime(int(obs[6]), 1, 1) + datetime.timedelta(days=int(obs[4])-1, hours=int(obs[2])) # Needed to get the correct date from day of year and hour of day
+        
+        if self.verbose:
+            print("Year, Day of Year, Hour of Day:", obs[6], obs[4], obs[2])
+            print("Fabricated Date:", date)
+
         assert round(float(price), 2) == round(float(feature_price), 2), f"Price ({round(float(price), 2)}) and price ({round(float(feature_price), 2)}) do not match, with {obs[2]} hour, {obs[3]} day of week, {obs[4]} day of year, {obs[5]} month and {obs[6]} year, and {feature_date}"
         
         # Normalize data - WATCH OUT; self.price_history is a deque, not an array, the normal price_history is an array!
@@ -127,14 +128,120 @@ class DDQNAgent:
             price_history = self.normalize_data(price_history)
             battery_level /= 50
             # features are already normalized in the setup function
+            
+        grads = self.grads[self.env.counter] # Get gradient features for reward shaping
+        
+        if self.verbose:
+            print("Date:", date, "Grads:", grads)
         
         # Concatenate price history, battery level, car availability and features
         state = np.concatenate((price_history, np.array([battery_level, car_is_available]), features))   
         
-        return state
+        return state, grads
     
-    
-    
+
+
+    def action_to_cont(self, action):
+        """
+        Function that maps a discrete action to the continuous action space between -1 and 1
+        
+        Params:
+            action (int) = discrete action
+        
+        Returns:
+            rescaled_action (float) = continuous action
+        """
+        
+        if self.action_classes % 2 == 0:
+            
+            # Map action to the action space from -1 to 1 (even number of actions, where we have only one charge option)
+            no_action = self.action_classes - 1
+            rescaled_action = (action - no_action) / no_action
+            rescaled_action = 1 if rescaled_action > 0 else rescaled_action
+            
+        else:
+            # Map action to the action space from -1 to 1
+            middle_action = (self.action_classes - 1) / 2 # Action at which the agent does not charge or discharge
+            rescaled_action = (action - middle_action) / middle_action 
+        
+        
+        return rescaled_action
+
+
+
+ 
+        
+    def shape_reward(self, reward, action, grads, factor=1, apply=True):
+        """
+        Function to apply a penalty to the reward based on the gradient of the price.
+
+        Args:
+            reward (float): The original reward.
+            action (int): The chosen action.
+            grads (tuple): Tuple of gradients (grad1, grad2, grad4, grad6, grad8, grad12, grad18).
+            factor (float): The factor to control the scaling of the penalty.
+            apply (bool): Whether to apply the penalty or not.
+
+        Returns:
+            shaped_reward (float): The scaled reward with penalty applied.
+        """
+
+        if not apply:
+            return reward
+
+        grad1, grad2, grad4, grad6, grad8, grad12, grad18 = grads
+
+
+        ## Shaping for Sell Action: Penalize buying when price is still increasing, don't penalize when on top
+        if action < 0:
+            if grad1 > 0:
+                penalty = max(grad1, grad2)  # Ensured positive penalty
+            else:
+                penalty = 0
+
+            if grad1 > 0 and grad2 > 0 and grad4 > 0 and grad6 > 0 and grad8 > 0 and grad12 > -2 and grad18 > 0:
+                penalty = 0
+
+            penalized_reward = reward - penalty * np.abs(action) * 25 # 25 is the max power of the battery
+
+
+        ## Shaping for Buy Action
+        elif action > 0:
+
+            if (grad1 > 0) and grad6 < 0 and grad8 < 0 and grad18 < 0: # Aims at points where the price is increasing shortly after a dip (price valley)
+                penalty = max((grad6, grad8))
+            else:
+                penalty = 0           
+            
+            penalized_reward = reward - penalty * action * 25 * 1 # Enforce two consecutive charge actions by reducing the negative reward for charging (subtracting a negative number increases the reward, and penalty is negative here bc of negative gradient)
+        
+        
+        ## No Shaping for Neutral Action
+        else:
+            penalized_reward = reward
+            
+            
+        # Scale the reward based on the factor
+        shaped_reward = reward * (1 - factor) + penalized_reward * factor
+
+        return shaped_reward
+        
+
+
+
+    def DQNstep(self):
+        """
+        Function that switches the DQN from the predictDQN to the targetDQN after 2500 steps
+        """
+        self.dqn_index += 1
+        
+        if self.dqn_index == 2500:
+            self.dqn_target.load_state_dict(self.dqn_predict.state_dict())
+            self.dqn_index = 0
+
+
+
+
     def choose_action(self, step, state, greedy=False):
         """
         Function to choose an action based on the epsilon-greedy policy
@@ -162,44 +269,12 @@ class DDQNAgent:
         if len(self.price_history) != self.price_history.maxlen:
             action = (self.action_classes - 1) / 2 # Middle action in which agents doesn't do anything
 
-        # Make sure that the action is a numpy array
-        # if not isinstance(action, np.ndarray):
-        #     action = np.array([action], dtype=np.float32)
         
-        return action
-
-
-    def action_to_cont(self, action):
-        """
-        Function that maps a discrete action to the continuous action space between -1 and 1
+        return action 
         
-        Params:
-            action (int) = discrete action
-        
-        Returns:
-            rescaled_action (float) = continuous action
-        """
-        
-        # Map action to the action space from -1 to 1
-        middle_action = (self.action_classes - 1) / 2 # Action at which the agent does not charge or discharge
-        rescaled_action = (action - middle_action) / middle_action 
-    
-        return rescaled_action
         
         
 
-    def DQNstep(self):
-        """
-        Function that switches the DQN from the predictDQN to the targetDQN after 2000 steps
-        """
-        self.dqn_index += 1
-        
-        if self.dqn_index == 2000:
-            self.dqn_target.load_state_dict(self.dqn_predict.state_dict())
-            self.dqn_index = 0
-        
-        
-        
     def optimize(self, batch_size):
             
         """
@@ -222,24 +297,27 @@ class DDQNAgent:
         # Compute Loss: 
         # First compute DQN output for current state        
         q_values = self.dqn_predict(states) #Predict q-values for the current state
-        
-        # try:
-        #     sq_actions = actions.squeeze(-1)
-        # except:
-        #     print(actions)
-        #     sq_actions = actions
-            
         action_q_values = torch.gather(input=q_values, dim=1, index=actions) # Select the q-value for the action that was taken
         
         # Then: Compute DQN output for next state, and build the targets based on reward and the max q-value of the next state 
-        target_q_values = self.dqn_target(new_states) # Predict q-values for the next state
-        max_target_q_values = target_q_values.max(dim=1, keepdim=True)[0] # Select the max q-value of the next state
-        #new_rewards = torch.tensor(np.where(rewards < 0, rewards / 2, rewards)) # Penalize negative rewards
-        targets = rewards + self.discount_rate * (1-terminateds) * max_target_q_values # Compute the target q-value based on the reward and the max q-value of the next state
+        # target_q_values = self.dqn_target(new_states) # Predict q-values for the next state
+        # max_target_q_values = target_q_values.max(dim=1, keepdim=True)[0] # Select the max q-value of the next state
+        # new_rewards = torch.tensor(np.where(rewards < 0, rewards / 2, rewards)) # Penalize negative rewards
+        # targets = rewards + self.discount_rate * max_target_q_values # Compute the target q-value based on the reward and the max q-value of the next state 
         
+        ### ACTUAL DOUBLE DQN IMPLEMENTATION ###
+        
+        #action_selection = Q_network(next_state).argmax(dim=1)
+        #Q_value_next = target_Q_network(next_state).gather(1, action_selection.unsqueeze(1)).squeeze(1).detach()
+        #target = reward + (1 - done) * gamma * Q_value_next
+    
+        action_selection = self.dqn_predict(new_states).argmax(dim=1)
+        target_q_values = self.dqn_target(new_states)
+        targets = rewards + (1 - terminateds) * self.discount_rate * torch.gather(input = target_q_values, dim = 1, index = action_selection.unsqueeze(1)).squeeze(1).view(-1,1)
+                
         #Loss
-        #loss = F.smooth_l1_loss(action_q_values, targets.detach()) #Compute the loss between the predicted q-value for the action taken and the target q-value based on the next observation
-        loss = F.mse_loss(action_q_values, targets.detach()) #Compute the loss between the predicted q-value for the action taken and the target q-value based on the next observation
+        loss = F.smooth_l1_loss(action_q_values, targets.detach()) #Compute the loss between the predicted q-value for the action taken and the target q-value based on the next observation
+        #loss = F.mse_loss(action_q_values, targets.detach()) #Compute the loss between the predicted q-value for the action taken and the target q-value based on the next observation
 
         #Gradient descent
         self.dqn_predict.optimizer.zero_grad()
@@ -281,7 +359,7 @@ class TemporalDDQNAgent(DDQNAgent):
 
 class ReplayBuffer:
     
-    def __init__(self, env, state_dim, buffer_size, action_classes, min_replay_size = 1000, seed = 2705, state_func = None, action_func = None):
+    def __init__(self, env, state_dim, buffer_size, action_classes, min_replay_size = 1000, seed = 2705, state_func = None, action_func = None, reward_func = None):
         
         '''
         Params:
@@ -301,7 +379,7 @@ class ReplayBuffer:
         
         #Initialize replay buffer with random transitions (transitions based on random actions)      
         obs, r, terminated, _ , _ = env.step(random.uniform(-1,1))
-        state = state_func(obs)
+        state, grads = state_func(obs)
         
         while True:
             
@@ -312,14 +390,18 @@ class ReplayBuffer:
             new_obs, r, terminated, _ , _ = env.step(cont_action)
 
             # Get state from observation
-            new_state = state_func(new_obs)
+            new_state, new_grads = state_func(new_obs)
+            
+            #Reward Shaping
+            new_reward = reward_func(r, cont_action, grads)
             
             if state.shape[0] == state_dim and new_state.shape[0] == state_dim:
             
-                transition = (state, action, r, terminated, new_state)
+                transition = (state, action, new_reward, terminated, new_state)
                 self.replay_buffer.append(transition)
             
             state = new_state
+            grads = new_grads
     
             if len(self.replay_buffer) >= self.min_replay_size:
                 break

@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import gymnasium as gym
 import random
 from collections import deque
 import datetime
@@ -120,15 +119,16 @@ class DDQNEvaluation():
             self.dates.append(date) 
             
             # State from observation
-            state = agent.obs_to_state(obs)
-            
+            state, grads = agent.obs_to_state(obs)
             action = agent.choose_action(0, state, greedy = True) # 0 is the step number for epsilon decay, not used here
+            
             cont_action = agent.action_to_cont(action)
-            obs, reward, terminated, truncated, _ = agent.env.step(cont_action)
+            obs, reward, terminated, _, _ = agent.env.step(cont_action)
+            
             self.actions.append(action)
             self.balance.append(reward)
                 
-            if terminated or truncated:
+            if terminated:
                 print("Absolute Balance: ", np.sum(self.balance))
                 break
 
