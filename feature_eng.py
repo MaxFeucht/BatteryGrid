@@ -1,10 +1,9 @@
 import pandas as pd
 import numpy as np
 
-# 1: Datetime 2: Price 
 
 def features_pipeline(data, fourier_window, gradient_window, general_window):
-    data_copy = data.copy()  # Create a copy of the input data
+    data_copy = data.copy() 
 
     columns_begin = len(data_copy.columns)
 
@@ -30,12 +29,42 @@ def features_pipeline(data, fourier_window, gradient_window, general_window):
         data_copy = moving_max(data_copy, window_size)
     print('...moving features created...')
     
+    data_copy = match_peak_hours(data_copy, business_hours=False)
+
     print('Total added columns: ', len(data_copy.columns) - columns_begin)
     
     data_copy = data_copy.drop(columns=['date'])
 
     return data_copy
 
+def match_peak_hours(data, business_hours):
+    data_copy = data.copy()
+    data_copy['week'] = data_copy['datetime'].dt.isocalendar().week
+    data_copy['hour'] = data_copy['datetime'].dt.hour
+    data_copy['non_business_peak'] = 0
+    data_copy['non_business_valley'] = 0
+    if business_hours == True:
+        data_copy['business_valley'] = 0
+        data_copy['business_peak'] = 0
+
+    peak_df = pd.read_csv('data/peak_df.csv')
+
+    # for every match with 'week' and 'hour' in peak_df, set non_business_peak to 1
+    for index, row in peak_df.iterrows():
+        data_copy.loc[(data_copy['week'] == row['week']) &
+                       (data_copy['hour'] == row['non_business_peak']),
+                         'non_business_peak'] = 1
+        data_copy.loc[(data_copy['week'] == row['week']) &
+                       (data_copy['hour'] == row['non_business_valley']),
+                         'non_business_valley'] = 1
+        if business_hours == True:
+            data_copy.loc[(data_copy['week'] == row['week']) &
+                       (data_copy['hour'] == row['business_peak']),
+                         'business_peak'] = 1
+            data_copy.loc[(data_copy['week'] == row['week']) &
+                       (data_copy['hour'] == row['business_valley']),
+                         'business_valley'] = 1
+    return data_copy
 
 def gradient_features(data, num_prev_points=1):
     data_copy = data.copy()  # Create a copy of the input data
@@ -146,6 +175,7 @@ def date_features(data):
 
     data_copy['day_of_week'] = data_copy['datetime'].dt.dayofweek
     data_copy['day_of_month'] = data_copy['datetime'].dt.day
+    data_copy['week'] = data_copy['datetime'].dt.isocalendar().week
     data_copy['month'] = data_copy['datetime'].dt.month
     data_copy['year'] = data_copy['datetime'].dt.year
     data_copy['hour'] = data_copy['datetime'].dt.hour
@@ -155,13 +185,16 @@ def date_features(data):
 def average_date_features(data):
     data_copy = data.copy()  # Create a copy of the input data
 
-    # Lets reconsider to not use this it feels like it would not translate well to the tests set
+    # Lets reconsider to not use this it feels like it would not translate well to the test set
     # time of day
     # combinations
     data_copy['average_hour'] = data_copy.groupby(['hour'])['price'].transform('mean')
-    data_copy['average_day'] = data_copy.groupby(['day_of_week', 'hour'])['price'].transform('mean')
+    data_copy['average_day_of_week'] = data_copy.groupby(['day_of_week', 'hour'])['price'].transform('mean')
     data_copy['average_day_of_month'] = data_copy.groupby(['day_of_month', 'hour'])['price'].transform('mean')
-    
+    data_copy['average_week'] = data_copy.groupby(['week', 'hour'])['price'].transform('mean')
     data_copy['average_month'] = data_copy.groupby(['month', 'hour'])['price'].transform('mean')
     data_copy['average_season'] = data_copy.groupby(['season', 'hour'])['price'].transform('mean')
+
+    data_copy['average_hour_x_week'] = data_copy.groupby(['hour', 'week'])['price'].transform('mean')
+    data_copy['average_hour_x_month'] = data_copy.groupby(['hour', 'month'])['price'].transform('mean')
     return data_copy
