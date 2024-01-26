@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.nn.utils import weight_norm
+from torch.nn.utils.parametrizations import weight_norm
 from collections import deque
 import datetime
 
@@ -155,7 +155,7 @@ class DDQNAgent:
         if self.action_classes % 2 == 0:
             
             # Map action to the action space from -1 to 1 (even number of actions, where we have only one charge option)
-            no_action = self.action_classes - 1
+            no_action = self.action_classes - 2
             rescaled_action = (action - no_action) / no_action
             rescaled_action = 1 if rescaled_action > 0 else rescaled_action
             
@@ -258,7 +258,6 @@ class DDQNAgent:
         epsilon = np.interp(step, [0, self.epsilon_decay], [self.epsilon_start, self.epsilon_end])
 
         if not greedy and random.random() <= epsilon:
-            #action = self.env.continuous_action_space.sample() # Replace continous sampling with discrete sampling
             action = random.randint(0, self.action_classes-1)
         else:
             obs_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
@@ -269,7 +268,6 @@ class DDQNAgent:
         if len(self.price_history) != self.price_history.maxlen:
             action = (self.action_classes - 1) / 2 # Middle action in which agents doesn't do anything
 
-        
         return action 
         
         
@@ -306,11 +304,6 @@ class DDQNAgent:
         # targets = rewards + self.discount_rate * max_target_q_values # Compute the target q-value based on the reward and the max q-value of the next state 
         
         ### ACTUAL DOUBLE DQN IMPLEMENTATION ###
-        
-        #action_selection = Q_network(next_state).argmax(dim=1)
-        #Q_value_next = target_Q_network(next_state).gather(1, action_selection.unsqueeze(1)).squeeze(1).detach()
-        #target = reward + (1 - done) * gamma * Q_value_next
-    
         action_selection = self.dqn_predict(new_states).argmax(dim=1)
         target_q_values = self.dqn_target(new_states)
         targets = rewards + (1 - terminateds) * self.discount_rate * torch.gather(input = target_q_values, dim = 1, index = action_selection.unsqueeze(1)).squeeze(1).view(-1,1)
@@ -334,20 +327,17 @@ class DDQNAgent:
 class TemporalDDQNAgent(DDQNAgent):
     
     def __init__ (self, env,
-                 lin_hidden_dim, temp_hidden_dim, kernel_size, dropout, 
+                 lin_hidden_dim, conv_hidden_dim, target_dim, kernel_size, dropout, tcn_path,
                  price_horizon = 96, action_classes = 7, *args, **kwargs):
-        super().__init__(hidden_dim=lin_hidden_dim, *args, **kwargs)
+        super().__init__(env = env, hidden_dim=lin_hidden_dim, *args, **kwargs)
         
         num_layers = math.ceil(math.log2(price_horizon/kernel_size) + 1)
         
-        feature_dim = self.env.features.shape[1] - 2 # -2 because we don't want to include the datetime and price columns
+        feature_dim = self.features.shape[1] - 2 # -2 because we don't want to include the datetime and price columns
         print("Number of engineered features: ", feature_dim)
         
-        self.dqn_predict = TemporalDQN(self.learning_rate, feature_dim=feature_dim, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, temp_hidden_dim = temp_hidden_dim, kernel_size = kernel_size, num_layers = num_layers, dropout=dropout).to(self.device)
-        self.dqn_target = TemporalDQN(self.learning_rate,feature_dim=feature_dim, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, temp_hidden_dim = temp_hidden_dim, kernel_size = kernel_size, num_layers = num_layers, dropout = dropout).to(self.device)
-        
-
-
+        self.dqn_predict = TemporalDQN(self.learning_rate, feature_dim=feature_dim, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, conv_hidden_dim = conv_hidden_dim, target_dim = target_dim, kernel_size = kernel_size, num_layers = num_layers, dropout=dropout, tcn_path = tcn_path).to(self.device)
+        self.dqn_target = TemporalDQN(self.learning_rate,feature_dim=feature_dim, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, conv_hidden_dim = conv_hidden_dim, target_dim = target_dim, kernel_size = kernel_size, num_layers = num_layers, dropout = dropout, tcn_path = tcn_path).to(self.device)
 
 
                 
@@ -532,7 +522,7 @@ class DQN(nn.Module):
     
 class TemporalDQN(nn.Module):
     
-    def __init__(self, learning_rate, feature_dim, price_horizon = 96, action_classes = 7, lin_hidden_dim = 128, temp_hidden_dim = 64, kernel_size = 2,  num_layers = 4, dropout = 0.2):
+    def __init__(self, learning_rate, feature_dim, price_horizon = 96, action_classes = 7, lin_hidden_dim = 128, conv_hidden_dim = 64, target_dim = 5, kernel_size = 2,  num_layers = 4, dropout = 0.2, tcn_path = None):
         
         '''
         Params:
@@ -543,16 +533,38 @@ class TemporalDQN(nn.Module):
         
         super(TemporalDQN, self).__init__()
         self.price_horizon = price_horizon
-        self.input_features = self.price_horizon + feature_dim  + 1 + 1 # price history + engineered features
         
-        tcn_channels = [temp_hidden_dim] * num_layers # First layer has price_horizon channels, second layer has temp_hidden_dim channels to match the input of dimension price_horizon
-        self.tcn = TCN(seq_len = price_horizon, num_inputs = 1, num_channels=tcn_channels, out_channels=temp_hidden_dim, kernel_size=kernel_size, dropout=dropout) # 3 layers with 128 hidden units each
+        # TCN Branch        
+        tcn_channels = [conv_hidden_dim] * num_layers # First layer has price_horizon channels, second layer has conv_hidden_dim channels to match the input of dimension price_horizon
+        tcn_channels[-1] = int(conv_hidden_dim / 8) # Last layer has conv_hidden_dim/8 channels for efficiency and to reduce variance
+        self.tcn = TCN(seq_len = price_horizon, num_inputs = 1, num_channels=tcn_channels, out_channels=target_dim, kernel_size=kernel_size, dropout=dropout) # 3 layers with 128 hidden units each
+
+        # Load TCN
+        self.tcn.load_state_dict(torch.load(tcn_path, map_location=torch.device('cpu')))
         
-        self.linear1 = nn.Linear(self.input_features - self.price_horizon, int(lin_hidden_dim/4))
-        self.linear2 = nn.Linear(int(lin_hidden_dim/4), int(lin_hidden_dim/2))
+        # Cutting and Freezing the TCN:
+        self.tcn = torch.nn.Sequential(*(list(self.tcn.children())[:-1])) # Cut off the last layer of the TCN
+        
+        # Freeze all layers except the last remaining dense layer:
+        for param in self.tcn.parameters():
+            param.requires_grad = False
+            
+        for param in self.tcn[-1].parameters():
+            param.requires_grad = True
+            
+        # Get dimensions of the output of the TCN
+        with torch.no_grad():
+            temp_out = self.tcn(torch.randn(1,1,self.price_horizon))
+            temp_out_dim = temp_out.shape[1]
+        
+        self.lin_features = feature_dim + 1 + 1 # price history + engineered features
+
+        self.linear1 = nn.Linear(self.lin_features, int(lin_hidden_dim/2))
+        self.linear2 = nn.Linear(int(lin_hidden_dim/2), int(lin_hidden_dim/2))
         
         ## Concatenate the TCN output and the linear output
-        self.linear3 = nn.Linear(temp_hidden_dim + int(lin_hidden_dim/2), lin_hidden_dim)
+        self.linear3 = nn.Linear(temp_out_dim + int(lin_hidden_dim/2), lin_hidden_dim)
+        self.linear4 = nn.Linear(lin_hidden_dim, lin_hidden_dim)
         self.dropout = nn.Dropout(dropout)
         self.out = nn.Linear(lin_hidden_dim, action_classes)
 
@@ -762,9 +774,12 @@ class TCN(nn.Module):
         self.tcn = TemporalConvNet(
             num_inputs, num_channels, kernel_size=kernel_size, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
-        self.dense = nn.Linear(seq_len*num_channels[-1], out_channels)
+        self.dense = nn.Linear(seq_len*num_channels[-1], seq_len*num_channels[-1])
+        self.dense2 = nn.Linear(seq_len*num_channels[-1], out_channels)
 
     def forward(self, x):
         tcn_output = self.tcn(x).flatten(start_dim=1) #Flatten over the features and timestep dimensions, preserve batch dimension (dim=0)
-        return self.dense(self.dropout(tcn_output))
+        x = self.dense(self.dropout(tcn_output))
+        x = self.dense2(self.dropout(x))
+        return x
     

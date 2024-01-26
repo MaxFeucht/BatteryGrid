@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 from torch.nn.utils import weight_norm
 
+    
+#################
+###### TCN ######
+#################
 
 class Chomp1d(nn.Module):
     def __init__(self, chomp_size):
@@ -126,6 +130,7 @@ class DepthwiseSeparableConvBlock(nn.Module):
         if self.downsample is not None:
             self.downsample.weight.data.normal_(0, 0.01)
 
+
     def forward(self, x):
         """
         Forward pass of the Depthwise Separable Convolution Block.
@@ -161,16 +166,18 @@ class TemporalConvNet(nn.Module):
         return self.network(x)
 
 
-
 class TCN(nn.Module):
     def __init__(self, seq_len, num_inputs, num_channels, out_channels, kernel_size=2, dropout=0.2):
         super(TCN, self).__init__()
         self.tcn = TemporalConvNet(
             num_inputs, num_channels, kernel_size=kernel_size, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
-        self.dense = nn.Linear(seq_len*num_channels[-1], out_channels)
+        self.dense = nn.Linear(seq_len*num_channels[-1], seq_len*num_channels[-1])
+        self.dense2 = nn.Linear(seq_len*num_channels[-1], out_channels)
 
     def forward(self, x):
         tcn_output = self.tcn(x).flatten(start_dim=1) #Flatten over the features and timestep dimensions, preserve batch dimension (dim=0)
-        return self.dense(self.dropout(tcn_output))
+        x = self.dense(self.dropout(tcn_output))
+        x = self.dense2(self.dropout(x))
+        return x
     

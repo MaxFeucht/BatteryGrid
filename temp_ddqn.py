@@ -7,8 +7,8 @@ import pandas as pd
 from tqdm import tqdm
 import random
 
-from utils import RuleEvaluation, DDQNEvaluation, Plotter
-from agent import DDQNAgent, TemporalDDQNAgent
+from utils import DDQNEvaluation, Plotter
+from agent import TemporalDDQNAgent
 
 from TestEnv import Electric_Car
 
@@ -70,16 +70,19 @@ epsilon = 1.0
 epsilon_decay = 99999
 epsilon_min = 0.1
 learning_rate = 5e-5
-price_horizon = 48
-future_horizon = 0
-hidden_dim = 96
+price_horizon = 120
+lin_hidden_dim = 128
+conv_hidden_dim = 64
+target_dim = 5
+kernel_size = 3
+dropout = 0.1
 action_classes = 3
 reward_shaping = True
 factor = 1
 verbose = False
 TRAIN = True
 df = train_name
-
+tcn_path = f'models/tcn_{target_dim}_horizon_small.pt'
 
 
 if TRAIN:
@@ -89,18 +92,23 @@ if TRAIN:
 
 
     #Initialize DQN
-    agent = DDQNAgent(env = env,
-                      features = features_train,
-                      epsilon_decay = epsilon_decay,
-                      epsilon_start = epsilon,
-                      epsilon_end = epsilon_min,
-                      discount_rate = gamma,
-                      lr = learning_rate,
-                      buffer_size = 100000,
-                      price_horizon = price_horizon,
-                      hidden_dim=hidden_dim,
-                      action_classes = action_classes, 
-                      verbose = verbose)
+    agent = TemporalDDQNAgent(env = env,
+                                features = features_train,
+                                epsilon_decay = epsilon_decay,
+                                epsilon_start = epsilon,
+                                epsilon_end = epsilon_min,
+                                discount_rate = gamma,
+                                lr = learning_rate,
+                                buffer_size = 100000,
+                                price_horizon = price_horizon,
+                                lin_hidden_dim=lin_hidden_dim,
+                                conv_hidden_dim=conv_hidden_dim,
+                                target_dim = target_dim,
+                                kernel_size = kernel_size,
+                                dropout = dropout,
+                                tcn_path = tcn_path,
+                                action_classes = action_classes, 
+                                verbose = verbose)
 
     obs, r, terminated, _, _ = env.step(random.randint(-1,1)) # Reset environment and get initial observation
     state, grads = agent.obs_to_state(obs)
