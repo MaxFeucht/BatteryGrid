@@ -32,7 +32,7 @@ class TemporalBlock(nn.Module):
         dropout (float, optional): Dropout probability. Default is 0.2.
     """
 
-    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.2):
+    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.1):
         super(TemporalBlock, self).__init__()
         self.conv1 = weight_norm(nn.Conv1d(n_inputs, n_outputs, kernel_size,
                                            stride=stride, padding=padding, dilation=dilation))
@@ -96,7 +96,7 @@ class DepthwiseSeparableConvBlock(nn.Module):
         downsample (bool, optional): Whether to apply downsampling. Default is False.
     """
 
-    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.2, downsample=False):
+    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.1, downsample=False):
         super(DepthwiseSeparableConvBlock, self).__init__()
         self.depthwise_conv1 = weight_norm(nn.Conv1d(n_inputs, n_inputs, kernel_size,
                                                     stride=stride, padding=padding, dilation=dilation, groups=n_inputs))
@@ -130,7 +130,6 @@ class DepthwiseSeparableConvBlock(nn.Module):
         if self.downsample is not None:
             self.downsample.weight.data.normal_(0, 0.01)
 
-
     def forward(self, x):
         """
         Forward pass of the Depthwise Separable Convolution Block.
@@ -150,7 +149,7 @@ class DepthwiseSeparableConvBlock(nn.Module):
 
 
 class TemporalConvNet(nn.Module):
-    def __init__(self, num_inputs, num_channels, kernel_size=2, dropout=0.2):
+    def __init__(self, num_inputs, num_channels, kernel_size, dropout=0.1):
         super(TemporalConvNet, self).__init__()
         layers = []
         num_levels = len(num_channels) # num_channels is a list of the number of channels for each layer 
@@ -166,18 +165,19 @@ class TemporalConvNet(nn.Module):
         return self.network(x)
 
 
+
 class TCN(nn.Module):
-    def __init__(self, seq_len, num_inputs, num_channels, out_channels, kernel_size=2, dropout=0.2):
+    def __init__(self, seq_len, num_inputs, num_channels, out_channels, kernel_size, dropout=0.1):
         super(TCN, self).__init__()
         self.tcn = TemporalConvNet(
             num_inputs, num_channels, kernel_size=kernel_size, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
-        self.dense = nn.Linear(seq_len*num_channels[-1], seq_len*num_channels[-1])
-        self.dense2 = nn.Linear(seq_len*num_channels[-1], out_channels)
+        self.dense = nn.Linear(seq_len*num_channels[-1], out_channels) #seq_len*num_channels[-1])
+        #self.dense2 = nn.Linear(seq_len*num_channels[-1], out_channels)
 
     def forward(self, x):
         tcn_output = self.tcn(x).flatten(start_dim=1) #Flatten over the features and timestep dimensions, preserve batch dimension (dim=0)
         x = self.dense(self.dropout(tcn_output))
-        x = self.dense2(self.dropout(x))
+        #x = self.dense2(self.dropout(x))
         return x
     
