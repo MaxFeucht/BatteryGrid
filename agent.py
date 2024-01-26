@@ -643,7 +643,7 @@ class TemporalBlock(nn.Module):
         dropout (float, optional): Dropout probability. Default is 0.2.
     """
 
-    def __init__(self, n_inputs, n_outputs, kernel_size, stride, padding, dropout=0.1):
+    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dropout=0.1):
         super(TemporalBlock, self).__init__()
         self.conv1 = weight_norm(nn.Conv1d(n_inputs, n_outputs, kernel_size,
                                            stride=stride, padding=(kernel_size - 1) // 2, dilation=1))
@@ -697,8 +697,7 @@ class ConvBranch(nn.Module):
         for i in range(num_layers):
             in_channels = 1 if i == 0 else conv_hidden_dim
             out_channels = conv_hidden_dim
-            layers += [TemporalBlock(in_channels, out_channels, kernel_size, stride=1,
-                                     padding=0, dropout=dropout)]
+            layers += [TemporalBlock(in_channels, out_channels, kernel_size, stride=1, dropout=dropout)]
         self.convbranch = nn.Sequential(*layers)
     
     def forward(self, x):

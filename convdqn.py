@@ -71,10 +71,10 @@ epsilon_decay = 99999
 epsilon_min = 0.1
 learning_rate = 5e-5
 price_horizon = 72
-lin_hidden_dim = 64
-conv_hidden_dim = 16
+lin_hidden_dim = 96
+conv_hidden_dim = 12
 num_layers = 2
-kernel_size = 3
+kernel_size = 4
 dropout = 0.1
 action_classes = 3
 reward_shaping = True
@@ -102,7 +102,7 @@ agent = ConvDDQNAgent(env = env,
                             conv_hidden_dim=conv_hidden_dim,
                             kernel_size = kernel_size,
                             dropout = dropout,
-                            num_layers = 2,
+                            num_layers = num_layers,
                             action_classes = action_classes, 
                             verbose = verbose)
 
