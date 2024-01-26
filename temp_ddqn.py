@@ -71,7 +71,7 @@ epsilon_decay = 99999
 epsilon_min = 0.1
 learning_rate = 5e-5
 price_horizon = 120
-lin_hidden_dim = 128
+lin_hidden_dim = 32
 conv_hidden_dim = 64
 target_dim = 5
 kernel_size = 3
@@ -173,7 +173,7 @@ if TRAIN:
                     
 
     # Save agent
-    torch.save(agent.dqn_predict.state_dict(), f'models/agent_{action_classes}_hdim{hidden_dim}_profit.pt')
+    torch.save(agent.dqn_predict.state_dict(), f'models/tempagent_{action_classes}_gamma{gamma}.pt')
     pbar.close
 
 
@@ -195,19 +195,25 @@ else:
 env = Electric_Car(path_to_test_data=df)
 
 #Initialize DQN
-agent = DDQNAgent(env = env,
-                    features = features,
-                    epsilon_decay = epsilon_decay,
-                    epsilon_start = epsilon,
-                    epsilon_end = epsilon_min,
-                    discount_rate = gamma,
-                    lr = learning_rate,
-                    buffer_size = 100000,
-                    price_horizon = price_horizon,
-                    hidden_dim=hidden_dim,
-                    action_classes = action_classes)
+agent = TemporalDDQNAgent(env = env,
+                            features = features_train,
+                            epsilon_decay = epsilon_decay,
+                            epsilon_start = epsilon,
+                            epsilon_end = epsilon_min,
+                            discount_rate = gamma,
+                            lr = learning_rate,
+                            buffer_size = 100000,
+                            price_horizon = price_horizon,
+                            lin_hidden_dim=lin_hidden_dim,
+                            conv_hidden_dim=conv_hidden_dim,
+                            target_dim = target_dim,
+                            kernel_size = kernel_size,
+                            dropout = dropout,
+                            tcn_path = tcn_path,
+                            action_classes = action_classes, 
+                            verbose = verbose)
 
-agent.dqn_predict.load_state_dict(torch.load(f'models/agent_{action_classes}_hdim{hidden_dim}_profit.pt'))
+agent.dqn_predict.load_state_dict(torch.load(f'models/tempagent_{action_classes}_gamma{gamma}.pt'))
 
 # Evaluate Rule-Based Agent
 eval_ddqn = DDQNEvaluation(price_horizon=price_horizon)

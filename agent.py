@@ -17,7 +17,7 @@ import math
 class DDQNAgent:
     
     def __init__(self, env, features, epsilon_decay, 
-                 epsilon_start, epsilon_end, discount_rate, lr, buffer_size, price_horizon = 96, hidden_dim = 128, action_classes = 7, seed = 2705, normalize = True, verbose = False):
+                 epsilon_start, epsilon_end, discount_rate, lr, buffer_size, price_horizon, hidden_dim, action_classes, seed = 2705, normalize = True, verbose = False):
         """
         Params:
         env = environment that the agent needs to play
@@ -328,8 +328,8 @@ class TemporalDDQNAgent(DDQNAgent):
     
     def __init__ (self, env,
                  lin_hidden_dim, conv_hidden_dim, target_dim, kernel_size, dropout, tcn_path,
-                 price_horizon = 96, action_classes = 7, *args, **kwargs):
-        super().__init__(env = env, hidden_dim=lin_hidden_dim, *args, **kwargs)
+                 price_horizon, action_classes, *args, **kwargs):
+        super().__init__(env = env, hidden_dim=lin_hidden_dim, price_horizon = price_horizon, action_classes = action_classes, *args, **kwargs)
         
         num_layers = math.ceil(math.log2(price_horizon/kernel_size) + 1)
         
@@ -467,7 +467,7 @@ class ReplayBuffer:
 
 class DQN(nn.Module):
     
-    def __init__(self, learning_rate, feature_dim, price_horizon = 96, hidden_dim = 128, action_classes = 7):
+    def __init__(self, learning_rate, feature_dim, price_horizon, hidden_dim, action_classes):
         
         '''
         Params:
@@ -522,7 +522,7 @@ class DQN(nn.Module):
     
 class TemporalDQN(nn.Module):
     
-    def __init__(self, learning_rate, feature_dim, price_horizon = 96, action_classes = 7, lin_hidden_dim = 128, conv_hidden_dim = 64, target_dim = 5, kernel_size = 2,  num_layers = 4, dropout = 0.2, tcn_path = None):
+    def __init__(self, learning_rate, feature_dim, price_horizon, action_classes, lin_hidden_dim, conv_hidden_dim, target_dim, kernel_size,  num_layers, dropout, tcn_path = None):
         
         '''
         Params:
@@ -549,13 +549,13 @@ class TemporalDQN(nn.Module):
         for param in self.tcn.parameters():
             param.requires_grad = False
             
-        for param in self.tcn[-1].parameters():
-            param.requires_grad = True
+        # for param in self.tcn[-1].parameters():
+        #     param.requires_grad = True
             
         # Get dimensions of the output of the TCN
         with torch.no_grad():
             temp_out = self.tcn(torch.randn(1,1,self.price_horizon))
-            temp_out_dim = temp_out.shape[1]
+            temp_out_dim = temp_out.flatten(start_dim = 1).shape[1]
         
         self.lin_features = feature_dim + 1 + 1 # price history + engineered features
 
@@ -591,7 +591,7 @@ class TemporalDQN(nn.Module):
     
         '''
         #Temporal Branch
-        temp = self.tcn(x[:,:self.price_horizon].view(-1,1,self.price_horizon)) 
+        temp = self.tcn(x[:,:self.price_horizon].view(-1,1,self.price_horizon)).flatten(start_dim = 1)
         
         # Linear Branch
         lin = self.leakyReLU(self.linear1(x[:,self.price_horizon:]))
@@ -634,7 +634,7 @@ class TemporalBlock(nn.Module):
         dropout (float, optional): Dropout probability. Default is 0.2.
     """
 
-    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.2):
+    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.1):
         super(TemporalBlock, self).__init__()
         self.conv1 = weight_norm(nn.Conv1d(n_inputs, n_outputs, kernel_size,
                                            stride=stride, padding=padding, dilation=dilation))
@@ -698,7 +698,7 @@ class DepthwiseSeparableConvBlock(nn.Module):
         downsample (bool, optional): Whether to apply downsampling. Default is False.
     """
 
-    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.2, downsample=False):
+    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.1, downsample=False):
         super(DepthwiseSeparableConvBlock, self).__init__()
         self.depthwise_conv1 = weight_norm(nn.Conv1d(n_inputs, n_inputs, kernel_size,
                                                     stride=stride, padding=padding, dilation=dilation, groups=n_inputs))
@@ -751,7 +751,7 @@ class DepthwiseSeparableConvBlock(nn.Module):
 
 
 class TemporalConvNet(nn.Module):
-    def __init__(self, num_inputs, num_channels, kernel_size=2, dropout=0.2):
+    def __init__(self, num_inputs, num_channels, kernel_size, dropout=0.1):
         super(TemporalConvNet, self).__init__()
         layers = []
         num_levels = len(num_channels) # num_channels is a list of the number of channels for each layer 
@@ -769,17 +769,17 @@ class TemporalConvNet(nn.Module):
 
 
 class TCN(nn.Module):
-    def __init__(self, seq_len, num_inputs, num_channels, out_channels, kernel_size=2, dropout=0.2):
+    def __init__(self, seq_len, num_inputs, num_channels, out_channels, kernel_size, dropout=0.1):
         super(TCN, self).__init__()
         self.tcn = TemporalConvNet(
             num_inputs, num_channels, kernel_size=kernel_size, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
-        self.dense = nn.Linear(seq_len*num_channels[-1], seq_len*num_channels[-1])
-        self.dense2 = nn.Linear(seq_len*num_channels[-1], out_channels)
+        self.dense = nn.Linear(seq_len*num_channels[-1], out_channels) #seq_len*num_channels[-1])
+        #self.dense2 = nn.Linear(seq_len*num_channels[-1], out_channels)
 
     def forward(self, x):
         tcn_output = self.tcn(x).flatten(start_dim=1) #Flatten over the features and timestep dimensions, preserve batch dimension (dim=0)
         x = self.dense(self.dropout(tcn_output))
-        x = self.dense2(self.dropout(x))
+        #x = self.dense2(self.dropout(x))
         return x
     
