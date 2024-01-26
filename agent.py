@@ -6,6 +6,8 @@ from torch.nn.utils.parametrizations import weight_norm
 from collections import deque
 import datetime
 
+from tcn import TCN
+
 import gymnasium as gym
 import numpy as np
 import random 
@@ -340,6 +342,21 @@ class TemporalDDQNAgent(DDQNAgent):
         self.dqn_target = TemporalDQN(self.learning_rate,feature_dim=feature_dim, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, conv_hidden_dim = conv_hidden_dim, target_dim = target_dim, kernel_size = kernel_size, num_layers = num_layers, dropout = dropout, tcn_path = tcn_path).to(self.device)
 
 
+
+class ConvDDQNAgent(DDQNAgent):
+    
+    def __init__ (self, env,
+                 lin_hidden_dim, conv_hidden_dim, kernel_size, dropout,
+                 price_horizon, action_classes, num_layers, *args, **kwargs):
+        super().__init__(env = env, hidden_dim=lin_hidden_dim, price_horizon = price_horizon, action_classes = action_classes, *args, **kwargs)
+                
+        feature_dim = self.features.shape[1] - 2 # -2 because we don't want to include the datetime and price columns
+        print("Number of engineered features: ", feature_dim)
+        
+        self.dqn_predict = ConvDQN(self.learning_rate, feature_dim=feature_dim, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, conv_hidden_dim = conv_hidden_dim, kernel_size = kernel_size, num_layers = num_layers, dropout=dropout).to(self.device)
+        self.dqn_target = ConvDQN(self.learning_rate,feature_dim=feature_dim, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, conv_hidden_dim = conv_hidden_dim, kernel_size = kernel_size, num_layers = num_layers, dropout = dropout).to(self.device)
+
+
                 
 
 #########################################
@@ -542,8 +559,11 @@ class TemporalDQN(nn.Module):
         # Load TCN
         self.tcn.load_state_dict(torch.load(tcn_path, map_location=torch.device('cpu')))
         
-        # Cutting and Freezing the TCN:
-        self.tcn = torch.nn.Sequential(*(list(self.tcn.children())[:-1])) # Cut off the last layer of the TCN
+        # Cutting and Freezing the TCN:        
+        #self.tcn = torch.nn.Sequential(*(list(self.tcn.children())[:-2])) # Cut off the last layer of the TCN
+        layer_list = list(self.tcn.tcn.network.children())[:-5] # Cut the last two Conv Blocks
+        self.tcn = torch.nn.Sequential(*(layer_list))
+        self.tcn.eval() # Set the TCN to evaluation mode
         
         # Freeze all layers except the last remaining dense layer:
         for param in self.tcn.parameters():
@@ -604,20 +624,10 @@ class TemporalDQN(nn.Module):
         
         return x
     
-    
-#################
-###### TCN ######
-#################
 
-class Chomp1d(nn.Module):
-    def __init__(self, chomp_size):
-        super(Chomp1d, self).__init__()
-        self.chomp_size = chomp_size
-
-    def forward(self, x):
-        return x[:, :, :-self.chomp_size].contiguous()
-
-
+################################
+########### ConvDQN ###########
+###############################
 
 class TemporalBlock(nn.Module):
     """
@@ -629,27 +639,24 @@ class TemporalBlock(nn.Module):
         n_outputs (int): Number of output channels.
         kernel_size (int): Size of the convolutional kernel.
         stride (int): Stride of the convolutional operation.
-        dilation (int): Dilation rate of the convolutional operation.
         padding (int): Padding size for the convolutional operation.
         dropout (float, optional): Dropout probability. Default is 0.2.
     """
 
-    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.1):
+    def __init__(self, n_inputs, n_outputs, kernel_size, stride, padding, dropout=0.1):
         super(TemporalBlock, self).__init__()
         self.conv1 = weight_norm(nn.Conv1d(n_inputs, n_outputs, kernel_size,
-                                           stride=stride, padding=padding, dilation=dilation))
-        self.chomp1 = Chomp1d(padding)
+                                           stride=stride, padding=(kernel_size - 1) // 2, dilation=1))
         self.relu1 = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout)
 
         self.conv2 = weight_norm(nn.Conv1d(n_outputs, n_outputs, kernel_size,
-                                           stride=stride, padding=padding, dilation=dilation))
-        self.chomp2 = Chomp1d(padding)
+                                           stride=stride, padding=(kernel_size - 1) // 2, dilation=1))
         self.relu2 = nn.ReLU()
         self.dropout2 = nn.Dropout(dropout)
 
-        self.net = nn.Sequential(self.conv1, self.chomp1, self.relu1, self.dropout1,
-                                 self.conv2, self.chomp2, self.relu2, self.dropout2)
+        self.net = nn.Sequential(self.conv1, self.relu1, self.dropout1,
+                                 self.conv2, self.relu2, self.dropout2)
         self.downsample = nn.Conv1d(n_inputs, n_outputs, 1) if n_inputs != n_outputs else None
         self.relu = nn.ReLU()
         self.init_weights()
@@ -679,107 +686,92 @@ class TemporalBlock(nn.Module):
         out = self.net(x)
         res = x if self.downsample is None else self.downsample(x)
         return self.relu(out + res)
+
+class ConvBranch(nn.Module):
     
-    
-    
-
-class DepthwiseSeparableConvBlock(nn.Module):
-    """
-    Depthwise Separable Convolution Block. Applies a depthwise convolution followed by a pointwise convolution to reduce the number of parameters.
-
-    Args:
-        n_inputs (int): Number of input channels.
-        n_outputs (int): Number of output channels.
-        kernel_size (int): Size of the convolutional kernel.
-        stride (int): Stride value for the convolution.
-        dilation (int): Dilation value for the convolution.
-        padding (int): Padding value for the convolution.
-        dropout (float, optional): Dropout probability. Default is 0.2.
-        downsample (bool, optional): Whether to apply downsampling. Default is False.
-    """
-
-    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.1, downsample=False):
-        super(DepthwiseSeparableConvBlock, self).__init__()
-        self.depthwise_conv1 = weight_norm(nn.Conv1d(n_inputs, n_inputs, kernel_size,
-                                                    stride=stride, padding=padding, dilation=dilation, groups=n_inputs))
-        self.pointwise_conv1 = weight_norm(nn.Conv1d(n_inputs, n_outputs, 1))
-        self.chomp1 = Chomp1d(padding)
-        self.elu1 = nn.ELU()
-        self.dropout1 = nn.Dropout(dropout)
-
-        self.depthwise_conv2 = weight_norm(nn.Conv1d(n_outputs, n_outputs, kernel_size,
-                                                    stride=stride, padding=padding, dilation=dilation, groups=n_outputs))
-        self.pointwise_conv2 = weight_norm(nn.Conv1d(n_outputs, n_outputs, 1))
-        self.chomp2 = Chomp1d(padding)
-        self.elu2 = nn.ELU()
-        self.dropout2 = nn.Dropout(dropout)
-
-        self.net = nn.Sequential(self.depthwise_conv1, self.pointwise_conv1, self.chomp1, self.elu1, self.dropout1,
-                                 self.depthwise_conv2, self.pointwise_conv2, self.chomp2, self.elu2, self.dropout2)
-        self.downsample = nn.Conv1d(n_inputs, n_outputs, 1) if n_inputs != n_outputs else None        
-        self.elu = nn.ELU()
-        self.init_weights()
-
-
-    def init_weights(self):
-        """
-        Initializes the weights of the convolutional layers.
-        """
-        self.depthwise_conv1.weight.data.normal_(0, 0.01)
-        self.pointwise_conv1.weight.data.normal_(0, 0.01)
-        self.depthwise_conv2.weight.data.normal_(0, 0.01)
-        self.pointwise_conv2.weight.data.normal_(0, 0.01)
-        if self.downsample is not None:
-            self.downsample.weight.data.normal_(0, 0.01)
-
-    def forward(self, x):
-        """
-        Forward pass of the Depthwise Separable Convolution Block.
-
-        Args:
-            x (torch.Tensor): Input tensor.
-
-        Returns:
-            torch.Tensor: Output tensor.
-        """
-        out = self.net(x)
-        res = x if self.downsample is None else self.downsample(x)
-
-        return self.elu(out + res)
-
-
-
-
-class TemporalConvNet(nn.Module):
-    def __init__(self, num_inputs, num_channels, kernel_size, dropout=0.1):
-        super(TemporalConvNet, self).__init__()
-        layers = []
-        num_levels = len(num_channels) # num_channels is a list of the number of channels for each layer 
-        for i in range(num_levels):
-            dilation_size = 2 ** i
-            in_channels = num_inputs if i == 0 else num_channels[i-1]
-            out_channels = num_channels[i]
-            layers += [TemporalBlock(in_channels, out_channels, kernel_size, stride=1, dilation=dilation_size,
-                                     padding=(kernel_size-1) * dilation_size, dropout=dropout)]
-        self.network = nn.Sequential(*layers)
+    def __init__(self, kernel_size, num_layers, dropout, conv_hidden_dim):
         
-    def forward(self, x):
-        return self.network(x)
-
-
-
-class TCN(nn.Module):
-    def __init__(self, seq_len, num_inputs, num_channels, out_channels, kernel_size, dropout=0.1):
-        super(TCN, self).__init__()
-        self.tcn = TemporalConvNet(
-            num_inputs, num_channels, kernel_size=kernel_size, dropout=dropout)
-        self.dropout = nn.Dropout(dropout)
-        self.dense = nn.Linear(seq_len*num_channels[-1], out_channels) #seq_len*num_channels[-1])
-        #self.dense2 = nn.Linear(seq_len*num_channels[-1], out_channels)
-
-    def forward(self, x):
-        tcn_output = self.tcn(x).flatten(start_dim=1) #Flatten over the features and timestep dimensions, preserve batch dimension (dim=0)
-        x = self.dense(self.dropout(tcn_output))
-        #x = self.dense2(self.dropout(x))
-        return x
+        super(ConvBranch, self).__init__()
+        
+        layers = []
+        for i in range(num_layers):
+            in_channels = 1 if i == 0 else conv_hidden_dim
+            out_channels = conv_hidden_dim
+            layers += [TemporalBlock(in_channels, out_channels, kernel_size, stride=1,
+                                     padding=0, dropout=dropout)]
+        self.convbranch = nn.Sequential(*layers)
     
+    def forward(self, x):
+        return self.convbranch(x)
+    
+
+class ConvDQN(nn.Module):
+    
+    def __init__(self, learning_rate, feature_dim, price_horizon, action_classes, lin_hidden_dim, conv_hidden_dim, kernel_size,  num_layers, dropout):
+        
+        '''
+        Params:
+        learning_rate = learning rate used in the update
+        hidden_dim = number of hidden units in the hidden layer
+        action_classes = number of actions that the agent can take
+        '''
+        
+        super(ConvDQN, self).__init__()
+        self.price_horizon = price_horizon
+        
+        # Conv Branch
+        self.convbranch = ConvBranch(kernel_size, num_layers, dropout, conv_hidden_dim)
+        print("Number of ConvBranch Parameters: ", sum(p.numel() for p in self.convbranch.parameters() if p.requires_grad))
+        
+        # Get dimensions of the output of the ConvBranch
+        with torch.no_grad():
+            temp_out = self.convbranch(torch.randn(1,1,self.price_horizon))
+            temp_out_dim = temp_out.flatten(start_dim = 1).shape[1]
+            print("ConvBranch output dimension: ", temp_out_dim)
+        
+        # Linear Branch
+        self.lin_features = feature_dim + 1 + 1 # price history + engineered features
+        self.linear1 = nn.Linear(self.lin_features, int(lin_hidden_dim/2))
+        self.linear2 = nn.Linear(int(lin_hidden_dim/2), int(lin_hidden_dim/2))
+        
+        ## Concatenate the ConvBranch output and the linear output
+        self.linear3 = nn.Linear(temp_out_dim + int(lin_hidden_dim/2), lin_hidden_dim)
+        self.linear4 = nn.Linear(lin_hidden_dim, lin_hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.out = nn.Linear(lin_hidden_dim, action_classes)
+
+        self.leakyReLU = nn.LeakyReLU()
+        self.sigmoid = nn.Sigmoid()
+        self.softmax = nn.Softmax()
+        
+        #Here we use ADAM, but you could also think of other algorithms such as RMSprob
+        self.optimizer = optim.Adam(self.parameters(), lr = learning_rate)
+    
+    
+    
+    def forward(self, x):
+        
+        '''
+        Params:
+        x = observation
+        '''
+        
+        '''
+        ToDo: 
+        Write the forward pass! You can use any activation function that you want (ReLU, tanh)...
+        Important: We want to output a linear activation function as we need the q-values associated with each action
+    
+        '''
+        #Temporal Branch
+        conv = self.convbranch(x[:,:self.price_horizon].view(-1,1,self.price_horizon)).flatten(start_dim = 1)
+        
+        # Linear Branch
+        lin = self.leakyReLU(self.linear1(x[:,self.price_horizon:]))
+        lin = self.leakyReLU(self.linear2(lin))
+        
+        # Concatenate
+        x = torch.cat((conv, lin), dim=1)
+        x = self.dropout(self.leakyReLU(self.linear3(x)))
+        x = self.out(x)
+        
+        return x

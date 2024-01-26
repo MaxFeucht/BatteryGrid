@@ -8,7 +8,7 @@ from tqdm import tqdm
 import random
 
 from utils import DDQNEvaluation, Plotter
-from agent import TemporalDDQNAgent
+from agent import ConvDDQNAgent
 
 from TestEnv import Electric_Car
 
@@ -73,7 +73,7 @@ learning_rate = 5e-5
 price_horizon = 72
 lin_hidden_dim = 64
 conv_hidden_dim = 16
-target_dim = 5
+num_layers = 2
 kernel_size = 3
 dropout = 0.1
 action_classes = 3
@@ -82,7 +82,6 @@ factor = 1
 verbose = False
 TRAIN = True
 df = train_name
-tcn_path = f'models/tcn_{price_horizon}_horizon_{target_dim}_future.pt'
 
 #%%
 
@@ -90,7 +89,7 @@ tcn_path = f'models/tcn_{price_horizon}_horizon_{target_dim}_future.pt'
 env = Electric_Car(path_to_test_data=df)
 
 #Initialize DQN
-agent = TemporalDDQNAgent(env = env,
+agent = ConvDDQNAgent(env = env,
                             features = features_train,
                             epsilon_decay = epsilon_decay,
                             epsilon_start = epsilon,
@@ -101,10 +100,9 @@ agent = TemporalDDQNAgent(env = env,
                             price_horizon = price_horizon,
                             lin_hidden_dim=lin_hidden_dim,
                             conv_hidden_dim=conv_hidden_dim,
-                            target_dim = target_dim,
                             kernel_size = kernel_size,
                             dropout = dropout,
-                            tcn_path = tcn_path,
+                            num_layers = 2,
                             action_classes = action_classes, 
                             verbose = verbose)
 

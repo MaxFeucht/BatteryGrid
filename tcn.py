@@ -2,8 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils import weight_norm
 
-    
-#################
+ #################
 ###### TCN ######
 #################
 
