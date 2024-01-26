@@ -29,42 +29,69 @@ def features_pipeline(data, fourier_window, gradient_window, general_window):
         data_copy = moving_max(data_copy, window_size)
     print('...moving features created...')
     
-    data_copy = match_peak_hours(data_copy, business_hours=False)
+    # options: time = month, week & both ---- Business_hours = true or false
+    data_copy = match_peak_hours(data_copy, business_hours=False, time='month')
+    print('...peak hour features created...')
+
 
     print('Total added columns: ', len(data_copy.columns) - columns_begin)
     
-    data_copy = data_copy.drop(columns=['date'])
+    if 'date' in data_copy.columns:
+        data_copy = data_copy.drop(columns=['date'])
 
     return data_copy
 
-def match_peak_hours(data, business_hours):
-    data_copy = data.copy()
-    data_copy['week'] = data_copy['datetime'].dt.isocalendar().week
-    data_copy['hour'] = data_copy['datetime'].dt.hour
+
+def match_peak_hours(data, business_hours=True, time='month'):
+  data_copy = data.copy()
+  data_copy['week'] = data_copy['datetime'].dt.isocalendar().week
+  data_copy['month'] = data_copy['datetime'].dt.month
+  data_copy['hour'] = data_copy['datetime'].dt.hour
+
+  peak_df = pd.read_csv('data/peak_df.csv')
+
+  # for every match with 'week' and 'hour' in peak_df, set non_business_peak to 1
+  if time == 'week' or time == 'both':
     data_copy['non_business_peak'] = 0
     data_copy['non_business_valley'] = 0
     if business_hours == True:
-        data_copy['business_valley'] = 0
-        data_copy['business_peak'] = 0
-
-    peak_df = pd.read_csv('data/peak_df.csv')
-
-    # for every match with 'week' and 'hour' in peak_df, set non_business_peak to 1
+      data_copy['business_valley'] = 0
+      data_copy['business_peak'] = 0
     for index, row in peak_df.iterrows():
-        data_copy.loc[(data_copy['week'] == row['week']) &
-                       (data_copy['hour'] == row['non_business_peak']),
-                         'non_business_peak'] = 1
-        data_copy.loc[(data_copy['week'] == row['week']) &
-                       (data_copy['hour'] == row['non_business_valley']),
-                         'non_business_valley'] = 1
-        if business_hours == True:
-            data_copy.loc[(data_copy['week'] == row['week']) &
-                       (data_copy['hour'] == row['business_peak']),
-                         'business_peak'] = 1
-            data_copy.loc[(data_copy['week'] == row['week']) &
-                       (data_copy['hour'] == row['business_valley']),
-                         'business_valley'] = 1
-    return data_copy
+      data_copy.loc[(data_copy['week'] == row['week']) &
+                    (data_copy['hour'] == row['non_business_peak']),
+                      'non_business_peak'] = 1
+      data_copy.loc[(data_copy['week'] == row['week']) &
+                    (data_copy['hour'] == row['non_business_valley']),
+                      'non_business_valley'] = 1
+      if business_hours == True:
+          data_copy.loc[(data_copy['week'] == row['week']) &
+                    (data_copy['hour'] == row['business_peak']),
+                      'business_peak'] = 1
+          data_copy.loc[(data_copy['week'] == row['week']) &
+                    (data_copy['hour'] == row['business_valley']),
+                      'business_valley'] = 1
+  elif time == 'month' or time == 'both':
+    data_copy['month_non_business_peak'] = 0
+    data_copy['month_non_business_valley'] = 0
+    if business_hours == True:
+      data_copy['month_business_valley'] = 0
+      data_copy['month_business_peak'] = 0
+    for index, row in peak_df.iterrows():
+      data_copy.loc[(data_copy['month'] == row['month']) &
+                      (data_copy['hour'] == row['month_non_business_peak']),
+                        'month_non_business_peak'] = 1
+      data_copy.loc[(data_copy['month'] == row['month']) &
+                    (data_copy['hour'] == row['month_non_business_valley']),
+                      'month_non_business_valley'] = 1
+      if business_hours == True:
+          data_copy.loc[(data_copy['month'] == row['month']) &
+                    (data_copy['hour'] == row['month_business_peak']),
+                      'month_business_peak'] = 1
+          data_copy.loc[(data_copy['month'] == row['month']) &
+                    (data_copy['hour'] == row['month_business_valley']),
+                      'month_business_valley'] = 1
+  return data_copy
 
 def gradient_features(data, num_prev_points=1):
     data_copy = data.copy()  # Create a copy of the input data
@@ -84,6 +111,7 @@ def gradient_features(data, num_prev_points=1):
             data_copy.loc[i, f'gradient_{num_prev_points}'] = gradient_sum 
     
     return data_copy
+
 
 def second_gradient_features(data, num_prev_points=1):
     data_copy = data.copy()  # Create a copy of the input data
@@ -108,6 +136,7 @@ def second_gradient_features(data, num_prev_points=1):
             data_copy.loc[i, f'second_gradient_{num_prev_points}'] = second_gradient_sum    
     
     return data_copy
+
 
 def fourier_top_freq(data, segment_size=72):
     '''
@@ -142,6 +171,7 @@ def fourier_top_freq(data, segment_size=72):
 
     return data_copy
 
+
 def moving_averages(data, window_size=72):
     data_copy = data.copy()  # Create a copy of the input data
 
@@ -152,11 +182,13 @@ def moving_averages(data, window_size=72):
     data_copy[f'moving_average_{window_size}'] = data_copy['price'].rolling(window=window_size, min_periods=1).mean()
     return data_copy
 
+
 def moving_std(data, window_size=72):
     data_copy = data.copy()  # Create a copy of the input data
 
     data_copy[f'moving_std_{window_size}'] = data_copy['price'].rolling(window=window_size, min_periods=1).std()
     return data_copy
+
 
 def moving_min(data, window_size=72):
     data_copy = data.copy()  # Create a copy of the input data
@@ -164,11 +196,13 @@ def moving_min(data, window_size=72):
     data_copy[f'moving_min_{window_size}'] = data_copy['price'].rolling(window=window_size, min_periods=1).min()
     return data_copy
 
+
 def moving_max(data, window_size=72):
     data_copy = data.copy()  # Create a copy of the input data
 
     data_copy[f'moving_max_{window_size}'] = data_copy['price'].rolling(window=window_size, min_periods=1).max()
     return data_copy
+
 
 def date_features(data):
     data_copy = data.copy()  # Create a copy of the input data
@@ -181,6 +215,7 @@ def date_features(data):
     data_copy['hour'] = data_copy['datetime'].dt.hour
     data_copy['season'] = (data_copy['month'] - 1) // 3 + 1
     return data_copy
+
 
 def average_date_features(data):
     data_copy = data.copy()  # Create a copy of the input data
