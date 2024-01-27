@@ -553,7 +553,7 @@ class TemporalDQN(nn.Module):
         
         # TCN Branch        
         tcn_channels = [conv_hidden_dim] * num_layers # First layer has price_horizon channels, second layer has conv_hidden_dim channels to match the input of dimension price_horizon
-        tcn_channels[-1] = int(conv_hidden_dim / 8) # Last layer has conv_hidden_dim/8 channels for efficiency and to reduce variance
+        tcn_channels[-1] = max(int(conv_hidden_dim / 8), 1) # Last layer has conv_hidden_dim/8 channels for efficiency and to reduce variance
         self.tcn = TCN(seq_len = price_horizon, num_inputs = 1, num_channels=tcn_channels, out_channels=target_dim, kernel_size=kernel_size, dropout=dropout) # 3 layers with 128 hidden units each
 
         # Load TCN
@@ -629,6 +629,7 @@ class TemporalDQN(nn.Module):
 ########### ConvDQN ###########
 ###############################
 
+
 class TemporalBlock(nn.Module):
     """
     TemporalBlock is a module that represents a single temporal block in a Temporal Convolutional Network (TCN).
@@ -645,13 +646,17 @@ class TemporalBlock(nn.Module):
 
     def __init__(self, n_inputs, n_outputs, kernel_size, stride, dropout=0.1):
         super(TemporalBlock, self).__init__()
+        
+        padding2 = (kernel_size - 1) // 2 
+        padding1 = padding2 + 1 if kernel_size % 2 == 0 else padding2 
+
         self.conv1 = weight_norm(nn.Conv1d(n_inputs, n_outputs, kernel_size,
-                                           stride=stride, padding=(kernel_size - 1) // 2, dilation=1))
+                                           stride=stride, padding = padding1, dilation=1))
         self.relu1 = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout)
 
         self.conv2 = weight_norm(nn.Conv1d(n_outputs, n_outputs, kernel_size,
-                                           stride=stride, padding=(kernel_size - 1) // 2, dilation=1))
+                                           stride=stride, padding = padding2, dilation=1))
         self.relu2 = nn.ReLU()
         self.dropout2 = nn.Dropout(dropout)
 
@@ -686,6 +691,7 @@ class TemporalBlock(nn.Module):
         out = self.net(x)
         res = x if self.downsample is None else self.downsample(x)
         return self.relu(out + res)
+
 
 class ConvBranch(nn.Module):
     

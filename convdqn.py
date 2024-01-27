@@ -63,18 +63,18 @@ features_val = pd.read_csv('data/features_val.csv')
 #%%
 
 seed = 2705
-rep = 1000000
+rep = 2000000
 batch_size = 32
 gamma = 0.965
 epsilon = 1.0
 epsilon_decay = 99999
 epsilon_min = 0.1
-learning_rate = 5e-5
-price_horizon = 72
+learning_rate = 1e-4
+price_horizon = 96
 lin_hidden_dim = 96
-conv_hidden_dim = 12
-num_layers = 2
-kernel_size = 4
+conv_hidden_dim = 16
+num_layers = 1
+kernel_size = 2
 dropout = 0.1
 action_classes = 3
 reward_shaping = True
@@ -204,7 +204,7 @@ else:
 env = Electric_Car(path_to_test_data=df)
 
 #Initialize DQN
-agent = TemporalDDQNAgent(env = env,
+agent = ConvDDQNAgent(env = env,
                             features = features_train,
                             epsilon_decay = epsilon_decay,
                             epsilon_start = epsilon,
@@ -215,10 +215,9 @@ agent = TemporalDDQNAgent(env = env,
                             price_horizon = price_horizon,
                             lin_hidden_dim=lin_hidden_dim,
                             conv_hidden_dim=conv_hidden_dim,
-                            target_dim = target_dim,
                             kernel_size = kernel_size,
                             dropout = dropout,
-                            tcn_path = tcn_path,
+                            num_layers = num_layers,
                             action_classes = action_classes, 
                             verbose = verbose)
 
