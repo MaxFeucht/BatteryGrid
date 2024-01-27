@@ -630,7 +630,7 @@ class TemporalDQN(nn.Module):
 ###############################
 
 
-class TemporalBlock(nn.Module):
+class ConvBlock(nn.Module):
     """
     TemporalBlock is a module that represents a single temporal block in a Temporal Convolutional Network (TCN).
     It consists of two convolutional layers with residual connections and dropout.
@@ -645,7 +645,7 @@ class TemporalBlock(nn.Module):
     """
 
     def __init__(self, n_inputs, n_outputs, kernel_size, stride, dropout=0.1):
-        super(TemporalBlock, self).__init__()
+        super(ConvBlock, self).__init__()
         
         padding2 = (kernel_size - 1) // 2 
         padding1 = padding2 + 1 if kernel_size % 2 == 0 else padding2 
@@ -702,8 +702,8 @@ class ConvBranch(nn.Module):
         layers = []
         for i in range(num_layers):
             in_channels = 1 if i == 0 else conv_hidden_dim
-            out_channels = conv_hidden_dim
-            layers += [TemporalBlock(in_channels, out_channels, kernel_size, stride=1, dropout=dropout)]
+            out_channels = conv_hidden_dim if i < num_layers - 1 else max(int(conv_hidden_dim / 8), 1)
+            layers += [ConvBlock(in_channels, out_channels, kernel_size, stride=1, dropout=dropout)]
         self.convbranch = nn.Sequential(*layers)
     
     def forward(self, x):
@@ -761,12 +761,6 @@ class ConvDQN(nn.Module):
         x = observation
         '''
         
-        '''
-        ToDo: 
-        Write the forward pass! You can use any activation function that you want (ReLU, tanh)...
-        Important: We want to output a linear activation function as we need the q-values associated with each action
-    
-        '''
         #Temporal Branch
         conv = self.convbranch(x[:,:self.price_horizon].view(-1,1,self.price_horizon)).flatten(start_dim = 1)
         
