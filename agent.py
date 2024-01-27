@@ -6,7 +6,7 @@ import random
 import math
 
 from dqn import DQN, TemporalDQN
-from experience_replay import ReplayBuffer
+from experience_replay import ReplayBuffer, PrioritizedReplayBuffer
 
 
 
@@ -112,6 +112,8 @@ class DDQNAgent:
         #new_rewards = torch.tensor(np.where(rewards < 0, rewards / 2, rewards)) # Penalize negative rewards
         targets = rewards + self.discount_rate * (1-terminateds) * max_target_q_values # Compute the target q-value based on the reward and the max q-value of the next state
         
+        td_error = targets.detach() - action_q_values #Compute the TD-error
+        abs_td_error = torch.abs(td_error) #Compute the absolute TD-error
         #Loss
         #loss = F.smooth_l1_loss(action_q_values, targets.detach()) #Compute the loss between the predicted q-value for the action taken and the target q-value based on the next observation
         loss = F.mse_loss(action_q_values, targets.detach()) #Compute the loss between the predicted q-value for the action taken and the target q-value based on the next observation
@@ -123,6 +125,10 @@ class DDQNAgent:
         
         #Switch DQN step
         self.DQNstep()
+
+        if self.replay_memory is PrioritizedReplayBuffer:
+            return loss.item(), abs_td_error.item()
+
         
         return loss.item()
     
