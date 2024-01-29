@@ -67,14 +67,14 @@ rep = 2000000
 batch_size = 32
 gamma = 0.965
 epsilon = 1.0
-epsilon_decay = 99999
+epsilon_decay = 29999
 epsilon_min = 0.1
 learning_rate = 1e-4
 price_horizon = 96
 lin_hidden_dim = 96
-conv_hidden_dim = 16
-num_layers = 2
-kernel_size = 2
+conv_hidden_dim = 12
+num_layers = 1
+kernel_size = 3
 dropout = 0.1
 action_classes = 3
 reward_shaping = True
@@ -83,7 +83,6 @@ verbose = False
 TRAIN = True
 df = train_name
 
-#%%
 
 # Initialize Environment
 env = Electric_Car(path_to_test_data=df)
@@ -120,8 +119,8 @@ print(f'Number of frozen parameters: {frozen}')
 print(f'Number of unfrozen parameters: {unfrozen}')
 
 
-
 #%%
+
 
 episode_balance = 0
 episode_loss = 0

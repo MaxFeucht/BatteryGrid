@@ -3,11 +3,101 @@ import pandas as pd
 import random
 from collections import deque
 import datetime
+from tqdm import tqdm 
 
 import matplotlib
 import matplotlib.pyplot as plt
 
 
+class Training():
+    
+    def __init__(self, env, agent, rep, batch_size, price_horizon):
+        
+        super().__init__()
+        
+        self.env = env
+        self.agent = agent
+        self.rep = rep
+        self.batch_size = batch_size
+        self.price_horizon = price_horizon
+    
+    
+    
+    def train(self, range = None):
+        
+        # Advance environment to the first step of the finetuning range if given
+        if range is not None:
+            
+            assert range[0] < range[1], "Range must be a tuple with the first element smaller than the second"
+            
+            for i in range(range[0]):
+                obs, _, _, _, _ = self.agent.env.step(1) # To advance the environment to the first step of the finetuning range
+                _,_ = self.agent.obs_to_state(obs) # To have the price history ready for the first step of the finetuning
+            
+            assert self.agent.env.counter == range[0] + self.price_horizon + self.agent.replay_memory.min_replay_size, "Environment not advanced to the first step of the finetuning range"
+
+        
+        episode_balance = 0
+        episode_loss = 0
+        episode_counter = 0
+        episode_reward = 0
+
+        obs, r, terminated, _, _ = self.env.step(random.randint(-1,1)) # Reset environment and get initial observation
+        state, grads = self.agent.obs_to_state(obs)
+
+        for i in tqdm(range(self.rep)):
+
+            action = self.agent.choose_action(i, state, greedy = False) # Choose action (discrete)
+            cont_action = self.agent.action_to_cont(action) # Convert to continuous action
+            
+            new_obs, r, t, _, _ = self.env.step(cont_action)
+            new_state, new_grads = self.agent.obs_to_state(new_obs)
+            
+            # Reward Shaping            
+            new_reward = self.agent.shape_reward(r, cont_action, grads)
+
+            # Fill replay buffer - THIS IS THE ONLY THING WE DO WITH THE CURRENT OBSERVATION - LEARNING IS FULLY PERFORMED FROM THE REPLAY BUFFER
+            if state.shape[0] == self.agent.state_dim and new_state.shape[0] == self.agent.state_dim:
+                self.agent.replay_memory.add_data((state, action, new_reward, t, new_state))
+
+            #Update DQN
+            loss = self.agent.optimize(self.batch_size)
+            
+            # Update values
+            episode_balance += r
+            episode_reward += r
+            episode_loss += loss
+
+            # New observation
+            state = new_state
+            grads = new_grads # Gradients for reward shaping
+            
+            # Reset environment if end of tuning range is reached
+            if range is not None:
+                if self.agent.env.counter == range[1]:
+                    t = True
+            
+            if t:
+                # Reset Environment
+                self.env.counter = 0
+                self.env.hour = 1
+                self.env.day = 1
+                episode_counter += 1
+                print('Episode ', episode_counter, 'Balance: ', episode_balance, 'Reward: ', episode_reward, 'Loss: ', episode_loss) # Add both balance and reward to see how training objective and actually spent money differ
+                episode_loss = 0
+                episode_balance = 0
+                episode_reward = 0
+                
+                
+                if episode_counter % 4 == 0:
+                    # Evaluate DQN
+                    train_dqn = DDQNEvaluation(price_horizon = self.price_horizon)
+                    train_dqn.evaluate(agent = self.agent)
+                    
+                    # Reset Environment
+                    self.env.counter = 0
+                    self.env.hour = 1
+                    self.env.day = 1
 
 
 class RuleEvaluation():

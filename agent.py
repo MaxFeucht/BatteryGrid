@@ -19,7 +19,7 @@ import math
 class DDQNAgent:
     
     def __init__(self, env, features, epsilon_decay, 
-                 epsilon_start, epsilon_end, discount_rate, lr, buffer_size, price_horizon, hidden_dim, action_classes, seed = 2705, normalize = True, verbose = False):
+                 epsilon_start, epsilon_end, discount_rate, lr, buffer_size, price_horizon, hidden_dim, num_layers, action_classes, positions, reward_shaping, shaping_factor, seed = 2705, normalize = True, verbose = False):
         """
         Params:
         env = environment that the agent needs to play
@@ -44,28 +44,37 @@ class DDQNAgent:
         self.buffer_size = buffer_size
         self.price_horizon = price_horizon
         self.action_classes = action_classes
+        self.positions = positions
+        self.reward_shaping = reward_shaping
+        self.reward_factor = shaping_factor
         self.normalize = normalize
         self.verbose = verbose
 
         # Set up price_history queue
         self.price_history = deque(maxlen=price_horizon)
-
+        self.action_history = deque(maxlen=6)
+        
         # Normalize features per column (feature) but not datetime and price in the first two columns
         self.grads = self.features[:,[11, 13, 15, 17, 19, 21, 23]] * 1e-3 # Get gradient features for reward shaping, divide by 1000 to bring gradient on same level as reward
-        self.features[:,2:] = self.normalize_data(self.features[:,2:], axis=0) if self.normalize else self.features[:,2:] # Normalize features per column (feature) 
-
+        self.features[:,2:-7] = self.normalize_data(self.features[:,2:-7], axis=0) if self.normalize else self.features[:,2:-7] # Normalize features per column (feature)         
+        
         feature_dim = features.shape[1] - 2 # -2 because we don't want to include the datetime and price columns
         print("Number of engineered features: ", feature_dim)
         
-        self.state_dim = price_horizon + feature_dim + 1 + 1 # price history + engineered features + battery level + car availability
+        self.state_dim = self.price_horizon + self.action_history.maxlen + feature_dim + 1 + 1 # price history + engineered features + battery level + car availability
+        
+        if self.positions:
+            self.state_dim += self.price_horizon
+            
         print("State dimension: ", self.state_dim)
         
         self.dqn_index = 0
-        self.dqn_predict = DQN(self.learning_rate, feature_dim=feature_dim, price_horizon=self.price_horizon, hidden_dim=hidden_dim, action_classes = action_classes).to(self.device)
-        self.dqn_target = DQN(self.learning_rate, feature_dim=feature_dim, price_horizon=self.price_horizon, hidden_dim=hidden_dim, action_classes = action_classes).to(self.device)
+        self.dqn_predict = DQN(self.learning_rate, input_dim=self.state_dim, hidden_dim=hidden_dim,  action_classes = action_classes).to(self.device)#num_layers = num_layers,
+        self.dqn_target = DQN(self.learning_rate, input_dim=self.state_dim, hidden_dim=hidden_dim, action_classes = action_classes).to(self.device) # num_layers = num_layers,
         self.dqn_target.load_state_dict(self.dqn_predict.state_dict())  # Initialize target network with the same parameters as the predict network
-        self.replay_memory = ReplayBuffer(self.env, state_dim = self.state_dim, buffer_size = self.buffer_size, action_classes = action_classes, seed = seed, state_func=self.obs_to_state, action_func=self.action_to_cont, reward_func = self.shape_reward) # State function is used to transform the observation to the state of the environment
+        self.replay_memory = ReplayBuffer(self.env, state_dim = self.state_dim, buffer_size = self.buffer_size, action_classes = action_classes, state_func=self.obs_to_state, action_func=self.action_to_cont, reward_func = self.shape_reward) # State function is used to transform the observation to the state of the environment
         
+        print("Number of DQN Parameters: ", sum(p.numel() for p in self.dqn_predict.parameters() if p.requires_grad))
 
 
 
@@ -78,12 +87,25 @@ class DDQNAgent:
                 return var
             
             if axis is None:
-                return (var - np.min(var)) / (np.max(var) - np.min(var))
+                norm = (var - np.min(var)) / (np.max(var) - np.min(var))
+                return norm if np.max(var) != np.min(var) else np.ones(var.shape) # If all values are the same, return an array of ones
         
             else:
                 return (var - np.min(var, axis=axis)) / (np.max(var, axis=axis) - np.min(var, axis=axis))
-        
     
+
+
+    def get_positional_encoding(self):
+        """
+        Generate positional encoding for a 1-dimensional sequence.
+        """
+        
+        # Compute the positional encoding
+        positional_encoding = np.array([np.sin(pos / 10000.0) for pos in range(self.price_horizon)])
+
+        return positional_encoding
+
+        
     
 
     def obs_to_state(self, obs):
@@ -103,6 +125,9 @@ class DDQNAgent:
         price = obs[1]
         car_is_available = obs[7]
         
+        # Create shaping_features
+        shaping_features = dict()
+        
         # Fill price history
         self.price_history.append(price)
 
@@ -115,6 +140,13 @@ class DDQNAgent:
         feature_price = features[0]
         features = features[1:] #by doing two times features[1:] we remove the date and price from the features array (not elegant but works)
         
+        # Add hour, day, peak and valley to shaping features for later reward shaping
+        shaping_features['hour'] = features[0]
+        shaping_features['day'] = features[1]
+        shaping_features['peak'] = features[-7]
+        shaping_features['valley'] = features[-6]
+        shaping_features['grads'] = self.grads[self.env.counter]
+        
         date = datetime.datetime(int(obs[6]), 1, 1) + datetime.timedelta(days=int(obs[4])-1, hours=int(obs[2])) # Needed to get the correct date from day of year and hour of day
         
         if self.verbose:
@@ -125,21 +157,24 @@ class DDQNAgent:
         
         # Normalize data - WATCH OUT; self.price_history is a deque, not an array, the normal price_history is an array!
         price_history = np.array(self.price_history)
+        action_history =  np.array(self.action_history)
         
         if self.normalize:
             price_history = self.normalize_data(price_history)
             battery_level /= 50
             # features are already normalized in the setup function
-            
-        grads = self.grads[self.env.counter] # Get gradient features for reward shaping
         
         if self.verbose:
-            print("Date:", date, "Grads:", grads)
+            print("Date:", date, "Grads:", shaping_features['grads'])
         
+        # Add positional encoding to price history
+        if self.positions:
+            price_history = np.concatenate((price_history, self.get_positional_encoding()))
+            
         # Concatenate price history, battery level, car availability and features
-        state = np.concatenate((price_history, np.array([battery_level, car_is_available]), features))   
+        state = np.concatenate((price_history, action_history, np.array([battery_level, car_is_available]), features))   
         
-        return state, grads
+        return state, shaping_features
     
 
 
@@ -166,6 +201,8 @@ class DDQNAgent:
             middle_action = (self.action_classes - 1) / 2 # Action at which the agent does not charge or discharge
             rescaled_action = (action - middle_action) / middle_action 
         
+        # Add action to action history
+        self.action_history.append(rescaled_action)
         
         return rescaled_action
 
@@ -173,14 +210,14 @@ class DDQNAgent:
 
  
         
-    def shape_reward(self, reward, action, grads, factor=1, apply=True):
+    def shape_reward(self, reward, action, shape_vars):
         """
         Function to apply a penalty to the reward based on the gradient of the price.
 
         Args:
             reward (float): The original reward.
             action (int): The chosen action.
-            grads (tuple): Tuple of gradients (grad1, grad2, grad4, grad6, grad8, grad12, grad18).
+            shape_vars (dict): Dictionary of variables needed for reward shaping.
             factor (float): The factor to control the scaling of the penalty.
             apply (bool): Whether to apply the penalty or not.
 
@@ -188,56 +225,70 @@ class DDQNAgent:
             shaped_reward (float): The scaled reward with penalty applied.
         """
 
-        if not apply:
+        if not self.reward_shaping:
+            print("No Reward Shaping")
             return reward
 
-        grad1, grad2, grad4, grad6, grad8, grad12, grad18 = grads
+        grad1, grad2, grad4, grad6, grad8, grad12, grad18 = shape_vars['grads']
+        hour = shape_vars['hour']
+        peak = shape_vars['peak']
+        valley = shape_vars['valley']
+
+        # ## Shaping for Sell Action: Penalize buying when price is still increasing, don't penalize when on top
+        # if action < 0:
+        #     if grad1 > 0:
+        #         penalty = max(grad1, grad2)  # Ensured positive penalty
+        #     else:
+        #         penalty = 0
+
+        #     if grad1 > 0 and grad2 > 0 and grad4 > 0 and grad6 > 0 and grad8 > 0 and grad12 > -2 and grad18 > 0:
+        #         penalty = 0
 
 
-        ## Shaping for Sell Action: Penalize buying when price is still increasing, don't penalize when on top
-        if action < 0:
-            if grad1 > 0:
-                penalty = max(grad1, grad2)  # Ensured positive penalty
-            else:
-                penalty = 0
 
-            if grad1 > 0 and grad2 > 0 and grad4 > 0 and grad6 > 0 and grad8 > 0 and grad12 > -2 and grad18 > 0:
-                penalty = 0
+        # ## Shaping for Buy Action
+        # elif action > 0:
 
-            penalized_reward = reward - penalty * np.abs(action) * 25 # 25 is the max power of the battery
-
-
-        ## Shaping for Buy Action
-        elif action > 0:
-
-            if (grad1 > 0) and grad6 < 0 and grad8 < 0 and grad18 < 0: # Aims at points where the price is increasing shortly after a dip (price valley)
-                penalty = max((grad6, grad8))
-            else:
-                penalty = 0           
+        #     if (grad1 > 0) and grad6 < 0 and grad8 < 0 and grad18 < 0: # Aims at points where the price is increasing shortly after a dip (price valley)
+        #         penalty = np.abs(max((grad6, grad8)))
+        #     else:
+        #         penalty = 0           
             
-            penalized_reward = reward - penalty * action * 25 * 1 # Enforce two consecutive charge actions by reducing the negative reward for charging (subtracting a negative number increases the reward, and penalty is negative here bc of negative gradient)
+        # Enforce buying when price is decreasing, enforce selling when price is increasing
+        penalty = abs(max(grad1, grad2, grad4, grad6, grad8, key = abs))
         
+        # This is either a positive (enforcing) penalty, if action > 0, or a negative penalty, if action < 0
+        next_battery_level = np.clip(self.env.battery_level + action * self.env.max_power * self.env.charge_efficiency, 0, self.env.battery_capacity)
         
-        ## No Shaping for Neutral Action
-        else:
-            penalized_reward = reward
-            
+        try:
+            battery_value = np.mean(self.price_history[-18:-12])*1e-3 # Average price of 18 to 12 hours ago. Reasoning: This is around the time in which the ammassed battery charge will be discharged again, so we want to know the price at that time
+        except:
+            battery_value = np.mean(self.price_history)*1e-3 # If the price history is not full, just take the average of the price history
+        
+        penalized_reward = reward + battery_value * next_battery_level * 0.1 
+        
+        # if np.abs(battery_value * next_battery_level * 0.1) > np.abs(reward) and np.abs(reward) > 0:
+        #     print("Penalty too high: ", battery_value * next_battery_level * 0.1, "Reward: ", reward)
             
         # Scale the reward based on the factor
-        shaped_reward = reward * (1 - factor) + penalized_reward * factor
+        shaped_reward = reward * (1 - self.reward_factor) + penalized_reward * self.reward_factor
+
+        # Add value of battery charge to reward
+        #shaped_reward = reward
+        #shaped_reward += self.env.battery_level * grad4 * 0.3 # Battery Charge has a third of the value if will when it is discharged
 
         return shaped_reward
+    
         
-
-
+        
 
     def DQNstep(self):
         """
-        Function that switches the DQN from the predictDQN to the targetDQN after 2500 steps
+        Function that switches the DQN from the predictDQN to the targetDQN after 5000 steps
         """
         self.dqn_index += 1
         
-        if self.dqn_index == 2500:
+        if self.dqn_index == 5000:
             self.dqn_target.load_state_dict(self.dqn_predict.state_dict())
             self.dqn_index = 0
 
@@ -269,7 +320,7 @@ class DDQNAgent:
         # If the price history is not full, the agent is not taking any action
         if len(self.price_history) != self.price_history.maxlen:
             action = (self.action_classes - 1) / 2 # Middle action in which agents doesn't do anything
-
+        
         return action 
         
         
@@ -300,11 +351,6 @@ class DDQNAgent:
         action_q_values = torch.gather(input=q_values, dim=1, index=actions) # Select the q-value for the action that was taken
         
         # Then: Compute DQN output for next state, and build the targets based on reward and the max q-value of the next state 
-        # target_q_values = self.dqn_target(new_states) # Predict q-values for the next state
-        # max_target_q_values = target_q_values.max(dim=1, keepdim=True)[0] # Select the max q-value of the next state
-        # new_rewards = torch.tensor(np.where(rewards < 0, rewards / 2, rewards)) # Penalize negative rewards
-        # targets = rewards + self.discount_rate * max_target_q_values # Compute the target q-value based on the reward and the max q-value of the next state 
-        
         ### ACTUAL DOUBLE DQN IMPLEMENTATION ###
         action_selection = self.dqn_predict(new_states).argmax(dim=1)
         target_q_values = self.dqn_target(new_states)
@@ -332,6 +378,9 @@ class TemporalDDQNAgent(DDQNAgent):
                  lin_hidden_dim, conv_hidden_dim, target_dim, kernel_size, dropout, tcn_path,
                  price_horizon, action_classes, *args, **kwargs):
         super().__init__(env = env, hidden_dim=lin_hidden_dim, price_horizon = price_horizon, action_classes = action_classes, *args, **kwargs)
+
+        if self.positions:
+            raise ValueError("Positional Encoding not implemented for TemporalDQN")
         
         num_layers = math.ceil(math.log2(price_horizon/kernel_size) + 1)
         
@@ -343,6 +392,7 @@ class TemporalDDQNAgent(DDQNAgent):
 
 
 
+
 class ConvDDQNAgent(DDQNAgent):
     
     def __init__ (self, env,
@@ -350,6 +400,9 @@ class ConvDDQNAgent(DDQNAgent):
                  price_horizon, action_classes, num_layers, *args, **kwargs):
         super().__init__(env = env, hidden_dim=lin_hidden_dim, price_horizon = price_horizon, action_classes = action_classes, *args, **kwargs)
                 
+        if self.positions:
+            raise ValueError("Positional Encoding not implemented for ConvDQN")
+            
         feature_dim = self.features.shape[1] - 2 # -2 because we don't want to include the datetime and price columns
         print("Number of engineered features: ", feature_dim)
         
@@ -366,8 +419,7 @@ class ConvDDQNAgent(DDQNAgent):
 
 class ReplayBuffer:
     
-    def __init__(self, env, state_dim, buffer_size, action_classes, min_replay_size = 1000, seed = 2705, state_func = None, action_func = None, reward_func = None):
-        
+    def __init__(self, env, state_dim, buffer_size, action_classes, min_replay_size = 1000, state_func = None, action_func = None, reward_func = None):
         '''
         Params:
         env = environment that the agent needs to play
@@ -386,29 +438,28 @@ class ReplayBuffer:
         
         #Initialize replay buffer with random transitions (transitions based on random actions)      
         obs, r, terminated, _ , _ = env.step(random.uniform(-1,1))
-        state, grads = state_func(obs)
+        state, shape_vars = state_func(obs)
         
         while True:
             
-            #action = env.continuous_action_space.sample()
             action = random.randint(0, self.action_classes-1) # Sample random action from action space
             cont_action = action_func(action) # Map discrete action to continous space for environment
             
             new_obs, r, terminated, _ , _ = env.step(cont_action)
 
             # Get state from observation
-            new_state, new_grads = state_func(new_obs)
+            new_state, new_shape_vars = state_func(new_obs)
             
             #Reward Shaping
-            new_reward = reward_func(r, cont_action, grads)
-            
+            reward = reward_func(r, cont_action, shape_vars)
+
             if state.shape[0] == state_dim and new_state.shape[0] == state_dim:
             
-                transition = (state, action, new_reward, terminated, new_state)
+                transition = (state, action, reward, terminated, new_state)
                 self.replay_buffer.append(transition)
             
             state = new_state
-            grads = new_grads
+            shape_vars = new_shape_vars
     
             if len(self.replay_buffer) >= self.min_replay_size:
                 break
@@ -432,7 +483,6 @@ class ReplayBuffer:
 
 
     def sample(self, batch_size):
-        
         '''
         Params:
         batch_size = number of transitions that will be sampled
@@ -473,8 +523,6 @@ class ReplayBuffer:
 
 
 
-
-
         
         
 
@@ -484,7 +532,42 @@ class ReplayBuffer:
 
 class DQN(nn.Module):
     
-    def __init__(self, learning_rate, feature_dim, price_horizon, hidden_dim, action_classes):
+    def __init__(self, learning_rate, input_dim, hidden_dim, action_classes, num_layers):
+        '''
+        Params:
+        learning_rate = learning rate used in the update
+        hidden_dim = number of hidden units in the hidden layer
+        action_classes = number of actions that the agent can take
+        '''
+        super(DQN, self).__init__()
+
+        # Define the layers of the DQN flexibly
+        layers = []
+        layers.append(nn.Linear(input_dim, hidden_dim))
+        layers.append(nn.LeakyReLU())  
+        for _ in range(num_layers - 2):
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            layers.append(nn.LeakyReLU())  
+        layers.append(nn.Linear(hidden_dim, action_classes))
+        self.dnn = nn.Sequential(*layers)
+        self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+    
+    
+    def forward(self, x):
+        '''
+        Params:
+        x = observation
+        '''
+        
+        x = self.dnn(x)
+        
+        return x
+    
+
+
+class DQN(nn.Module):
+    
+    def __init__(self, learning_rate, input_dim, hidden_dim, action_classes):
         
         '''
         Params:
@@ -494,18 +577,14 @@ class DQN(nn.Module):
         '''
         
         super(DQN,self).__init__()
-        input_features = price_horizon + feature_dim + 1 + 1  #battery charge, price, presence, day, hour
                 
-        self.linear1 = nn.Linear(input_features, hidden_dim)
+        self.linear1 = nn.Linear(input_dim, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, hidden_dim)
         self.linear3 = nn.Linear(hidden_dim, hidden_dim)
         self.linear4 = nn.Linear(hidden_dim, action_classes)
         
         self.leakyReLU = nn.LeakyReLU()
-        self.sigmoid = nn.Sigmoid()
-        self.softmax = nn.Softmax()
         
-        #Here we use ADAM, but you could also think of other algorithms such as RMSprob
         self.optimizer = optim.Adam(self.parameters(), lr = learning_rate)
     
     
@@ -517,21 +596,12 @@ class DQN(nn.Module):
         x = observation
         '''
         
-        '''
-        ToDo: 
-        Write the forward pass! You can use any activation function that you want (ReLU, tanh)...
-        Important: We want to output a linear activation function as we need the q-values associated with each action
-    
-        '''
-        
         x = self.leakyReLU(self.linear1(x))
         x = self.leakyReLU(self.linear2(x))
         x = self.leakyReLU(self.linear3(x))
         x = self.linear4(x)
         
         return x
-    
-    
     
 ###################################
 ########### TemporalDQN ###########
@@ -560,17 +630,15 @@ class TemporalDQN(nn.Module):
         self.tcn.load_state_dict(torch.load(tcn_path, map_location=torch.device('cpu')))
         
         # Cutting and Freezing the TCN:        
-        #self.tcn = torch.nn.Sequential(*(list(self.tcn.children())[:-2])) # Cut off the last layer of the TCN
-        layer_list = list(self.tcn.tcn.network.children())[:-5] # Cut the last two Conv Blocks
-        self.tcn = torch.nn.Sequential(*(layer_list))
+        self.tcn = torch.nn.Sequential(*(list(self.tcn.children())[:-2])) # Cut off the last layer of the TCN
+        #layer_list = list(self.tcn.tcn.network.children())[:-5] # Cut the last two Conv Blocks
+        #self.tcn = torch.nn.Sequential(*(layer_list))
         self.tcn.eval() # Set the TCN to evaluation mode
         
         # Freeze all layers except the last remaining dense layer:
         for param in self.tcn.parameters():
             param.requires_grad = False
-            
-        # for param in self.tcn[-1].parameters():
-        #     param.requires_grad = True
+                
             
         # Get dimensions of the output of the TCN
         with torch.no_grad():
@@ -630,6 +698,16 @@ class TemporalDQN(nn.Module):
 ###############################
 
 
+class Chomp1d(nn.Module):
+    def __init__(self, chomp_size):
+        super(Chomp1d, self).__init__()
+        self.chomp_size = chomp_size
+
+    def forward(self, x):
+        return x[:, :, :-self.chomp_size].contiguous()
+
+
+
 class ConvBlock(nn.Module):
     """
     TemporalBlock is a module that represents a single temporal block in a Temporal Convolutional Network (TCN).
@@ -640,23 +718,22 @@ class ConvBlock(nn.Module):
         n_outputs (int): Number of output channels.
         kernel_size (int): Size of the convolutional kernel.
         stride (int): Stride of the convolutional operation.
+        dilation (int): Dilation rate of the convolutional operation.
         padding (int): Padding size for the convolutional operation.
         dropout (float, optional): Dropout probability. Default is 0.2.
     """
 
-    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dropout=0.1):
+    def __init__(self, n_inputs, n_intermediate, n_outputs, kernel_size, stride, dropout=0.1):
         super(ConvBlock, self).__init__()
-        
-        padding2 = (kernel_size - 1) // 2 
-        padding1 = padding2 + 1 if kernel_size % 2 == 0 else padding2 
-
-        self.conv1 = weight_norm(nn.Conv1d(n_inputs, n_outputs, kernel_size,
-                                           stride=stride, padding = padding1, dilation=1))
+            
+        padding = (kernel_size-1) // 2
+        self.conv1 = weight_norm(nn.Conv1d(n_inputs, n_intermediate, kernel_size,
+                                           stride=stride, padding=padding, dilation=1))
         self.relu1 = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout)
 
-        self.conv2 = weight_norm(nn.Conv1d(n_outputs, n_outputs, kernel_size,
-                                           stride=stride, padding = padding2, dilation=1))
+        self.conv2 = weight_norm(nn.Conv1d(n_intermediate, n_outputs, kernel_size,
+                                           stride=stride, padding=padding, dilation=1))
         self.relu2 = nn.ReLU()
         self.dropout2 = nn.Dropout(dropout)
 
@@ -676,7 +753,6 @@ class ConvBlock(nn.Module):
         if self.downsample is not None:
             self.downsample.weight.data.normal_(0, 0.01)
 
-
     def forward(self, x):
         """
         Performs forward pass through the temporal block.
@@ -693,6 +769,7 @@ class ConvBlock(nn.Module):
         return self.relu(out + res)
 
 
+
 class ConvBranch(nn.Module):
     
     def __init__(self, kernel_size, num_layers, dropout, conv_hidden_dim):
@@ -703,7 +780,8 @@ class ConvBranch(nn.Module):
         for i in range(num_layers):
             in_channels = 1 if i == 0 else conv_hidden_dim
             out_channels = conv_hidden_dim if i < num_layers - 1 else max(int(conv_hidden_dim / 8), 1)
-            layers += [ConvBlock(in_channels, out_channels, kernel_size, stride=1, dropout=dropout)]
+            intermediate_channels = conv_hidden_dim
+            layers += [ConvBlock(in_channels, intermediate_channels, out_channels, kernel_size, stride=1, dropout=dropout)]
         self.convbranch = nn.Sequential(*layers)
     
     def forward(self, x):
@@ -713,7 +791,6 @@ class ConvBranch(nn.Module):
 class ConvDQN(nn.Module):
     
     def __init__(self, learning_rate, feature_dim, price_horizon, action_classes, lin_hidden_dim, conv_hidden_dim, kernel_size,  num_layers, dropout):
-        
         '''
         Params:
         learning_rate = learning rate used in the update
@@ -734,13 +811,16 @@ class ConvDQN(nn.Module):
             temp_out_dim = temp_out.flatten(start_dim = 1).shape[1]
             print("ConvBranch output dimension: ", temp_out_dim)
         
+        # Linear layer after Conv Branch
+        self.convlin = nn.Linear(temp_out_dim, lin_hidden_dim)
+        
         # Linear Branch
-        self.lin_features = feature_dim + 1 + 1 # price history + engineered features
+        self.lin_features = self.price_horizon + feature_dim + 1 + 1 # price history + engineered features
         self.linear1 = nn.Linear(self.lin_features, int(lin_hidden_dim/2))
         self.linear2 = nn.Linear(int(lin_hidden_dim/2), int(lin_hidden_dim/2))
         
         ## Concatenate the ConvBranch output and the linear output
-        self.linear3 = nn.Linear(temp_out_dim + int(lin_hidden_dim/2), lin_hidden_dim)
+        self.linear3 = nn.Linear(lin_hidden_dim + int(lin_hidden_dim/2), lin_hidden_dim)
         self.linear4 = nn.Linear(lin_hidden_dim, lin_hidden_dim)
         self.dropout = nn.Dropout(dropout)
         self.out = nn.Linear(lin_hidden_dim, action_classes)
@@ -755,7 +835,6 @@ class ConvDQN(nn.Module):
     
     
     def forward(self, x):
-        
         '''
         Params:
         x = observation
@@ -763,9 +842,10 @@ class ConvDQN(nn.Module):
         
         #Temporal Branch
         conv = self.convbranch(x[:,:self.price_horizon].view(-1,1,self.price_horizon)).flatten(start_dim = 1)
+        conv = self.leakyReLU(self.convlin(conv))
         
         # Linear Branch
-        lin = self.leakyReLU(self.linear1(x[:,self.price_horizon:]))
+        lin = self.leakyReLU(self.linear1(x))
         lin = self.leakyReLU(self.linear2(lin))
         
         # Concatenate
