@@ -29,8 +29,6 @@ class Electric_Car(gym.Env):
         self.day = 1
         self.car_is_available = True
 
-
-
     def step(self, action):
 
         action = np.squeeze(action)  # Remove the extra dimension
@@ -39,7 +37,7 @@ class Electric_Car(gym.Env):
             raise ValueError('Action must be between -1 and 1')
 
         # Calculate if, at 7am and after the chosen action, the battery level will be below the minimum morning level:
-        if self.hour == 7:
+        if self.hour == 8:
             if action > 0 and (self.battery_level < self.minimum_morning_level):
                 if (
                         self.battery_level + action * self.max_power * self.charge_efficiency) < self.minimum_morning_level:  # If the chosen action will not charge the battery to 20kWh
@@ -58,13 +56,6 @@ class Electric_Car(gym.Env):
                     action = (self.minimum_morning_level - self.battery_level) / (
                                 self.max_power * self.charge_efficiency)
 
-        # There is a 50% chance that the car is unavailable from 8am to 6pm
-        if self.hour == 8:
-            self.car_is_available = np.random.choice([True, False])
-            if not self.car_is_available:
-                self.battery_level -= self.car_use_consumption
-        if self.hour == 18:
-            self.car_is_available = True
         if not self.car_is_available:
             action = 0
 
@@ -74,17 +65,16 @@ class Electric_Car(gym.Env):
                 action = (self.battery_capacity - self.battery_level) / (self.max_power * self.charge_efficiency)
             charged_electricity_kW = action * self.max_power
             charged_electricity_costs = charged_electricity_kW * self.price_values[self.day - 1][
-                self.hour - 1] * 2 * 1e-3
+                self.hour-1] * 2 * 1e-3
             reward = -charged_electricity_costs
             self.battery_level += charged_electricity_kW * self.charge_efficiency
-
         # Calculate the profits and battery level when discharging (action <0)
         elif (action < 0) and (self.battery_level >= 0):
             if (self.battery_level + action * self.max_power) < 0:
                 action = -self.battery_level / (self.max_power)
             discharged_electricity_kWh = action * self.max_power  # Negative discharge value
             discharged_electricity_profits = abs(discharged_electricity_kWh) * self.discharge_efficiency * \
-                                             self.price_values[self.day - 1][self.hour - 1] * 1e-3
+                                             self.price_values[self.day - 1][self.hour-1] * 1e-3
             reward = discharged_electricity_profits
             self.battery_level += discharged_electricity_kWh
             # Some small numerical errors causing the battery level to be 1e-14 to 1e-17 under 0 :
@@ -96,6 +86,14 @@ class Electric_Car(gym.Env):
 
         self.counter += 1  # Increase the counter
         self.hour += 1  # Increase the hour
+
+        # There is a 50% chance that the car is unavailable from 8am to 6pm
+        if self.hour == 9:
+            self.car_is_available = np.random.choice([True, False])
+            if not self.car_is_available:
+                self.battery_level -= self.car_use_consumption
+        if self.hour == 19:
+            self.car_is_available = True
 
         if self.counter % 24 == 0:  # If the counter is a multiple of 24, increase the day, reset hour to first hour
             self.day += 1
@@ -111,11 +109,9 @@ class Electric_Car(gym.Env):
 
         return self.state, reward, terminated, truncated, info
 
-
-
     def observation(self):  # Returns the current state
         battery_level = self.battery_level
-        price = self.price_values[self.day - 1][self.hour - 1]
+        price = self.price_values[self.day - 1][self.hour-1]
         hour = self.hour
         day_of_week = self.timestamps[self.day - 1].dayofweek  # Monday = 0, Sunday = 6
         day_of_year = self.timestamps[self.day - 1].dayofyear  # January 1st = 1, December 31st = 365

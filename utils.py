@@ -4,6 +4,7 @@ import random
 from collections import deque
 import datetime
 from tqdm import tqdm 
+import torch
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -47,7 +48,7 @@ class Training():
 
         for i in tqdm(range(self.rep)):
 
-            action = self.agent.choose_action(i, state, greedy = False) # Choose action (discrete)
+            action, q = self.agent.choose_action(i, state, greedy = False) # Choose action (discrete)
             cont_action = self.agent.action_to_cont(action) # Convert to continuous action
             
             new_obs, r, t, _, _ = self.env.step(cont_action)
@@ -117,6 +118,7 @@ class RuleEvaluation():
         self.presence = []
         self.balance = []
         self.actions = []
+        self.shape_balance = []
                 
             
             
@@ -161,6 +163,7 @@ class RuleEvaluation():
             obs,reward, terminated, truncated, _ = self.env.step(action)
             self.actions.append(action)
             self.balance.append(reward)
+            self.shape_balance.append(reward)
             
             if terminated or truncated:
                 print("Absolute Balance: ", np.sum(self.balance))
@@ -183,6 +186,8 @@ class DDQNEvaluation():
         self.presence = []
         self.balance = []
         self.actions = []
+        self.shaped_balance = []
+        self.q_values = []
         
 
 
@@ -197,30 +202,38 @@ class DDQNEvaluation():
         assert agent is not None, "Agent must be defined"
 
         obs,reward, terminated, _, _ = agent.env.step(random.randint(-1,1)) # Reset environment and get initial observation from random action
+        
+        # Set to evaluation mode:
+        agent.dqn_predict.eval()
+        
+        with torch.no_grad():
+            
+            # Iterate through data 
+            while True:
                 
-        # Iterate through data 
-        while True:
-            
-            self.battery_charge.append(obs[0])
-            self.current_price.append(obs[1])
-            self.price_history.append(obs[1])
-            self.presence.append(obs[7])
-            date = datetime.datetime(int(obs[6]), 1, 1) + datetime.timedelta(days=int(obs[4]), hours=int(obs[2])) # Needed to get the correct date from day of year and hour of day
-            self.dates.append(date) 
-            
-            # State from observation
-            state, grads = agent.obs_to_state(obs)
-            action = agent.choose_action(0, state, greedy = True) # 0 is the step number for epsilon decay, not used here
-            
-            cont_action = agent.action_to_cont(action)
-            obs, reward, terminated, _, _ = agent.env.step(cont_action)
-            
-            self.actions.append(action)
-            self.balance.append(reward)
+                self.battery_charge.append(obs[0])
+                self.current_price.append(obs[1])
+                self.price_history.append(obs[1])
+                self.presence.append(obs[7])
+                date = datetime.datetime(int(obs[6]), 1, 1) + datetime.timedelta(days=int(obs[4]), hours=int(obs[2])) # Needed to get the correct date from day of year and hour of day
+                self.dates.append(date) 
                 
-            if terminated:
-                print("Absolute Balance: ", np.sum(self.balance))
-                break
+                # State from observation
+                state, grads = agent.obs_to_state(obs)
+                action, q = agent.choose_action(0, state, greedy = True) # 0 is the step number for epsilon decay, not used here
+                
+                cont_action = agent.action_to_cont(action)
+                obs, reward, terminated, _, _ = agent.env.step(cont_action)
+                shaped_reward = agent.shape_reward(reward, cont_action, grads)
+                
+                self.actions.append(action)
+                self.balance.append(reward)
+                self.shaped_balance.append(shaped_reward)
+                self.q_values.append(q)
+                
+                if terminated:
+                    print("Absolute Balance: ", np.sum(self.balance))
+                    break
 
 
 
@@ -237,6 +250,8 @@ class Plotter():
         self.current_price = self.evaluator.current_price[range[0]:range[1]]
         self.actions = self.evaluator.actions[range[0]:range[1]]
         self.presence = self.evaluator.presence[range[0]:range[1]]
+        self.shaped_balance = self.evaluator.shaped_balance[range[0]:range[1]]
+        self.q_values = self.evaluator.q_values[range[0]:range[1]]
         
         self.agent_name = '\n' + self.evaluator.__class__.__name__.replace('Evaluation','') + '-Agent: '
 
@@ -308,7 +323,7 @@ class Plotter():
         plt.show()
         
 
-    def plot_actions(self, balance = False, battery = False, absence = False):
+    def plot_actions(self, balance = False, battery = False, absence = False, shaped = False, q = False):
         
         """ 
         Plots actions taken by agent
@@ -332,16 +347,25 @@ class Plotter():
             var_names.append('Balance')
             title += ' + Balance'
         
+        if shaped:
+            plt.plot(self.dates, self.normalize(self.shaped_balance), color = 'purple', alpha = 0.8)
+            var_names.append('Shaped Balance')
+            title += ' + Shaped Balance'
+        
         if battery:
             plt.plot(self.dates, self.normalize(self.battery_charge), color = 'green', alpha = 0.8)
             var_names.append('Battery')
             title += ' + Battery Charge' 
         
+        if q:
+            plt.plot(self.dates, self.normalize(self.q_values), color = 'black', alpha = 0.8)
+            var_names.append('Q-Values')
+            title += ' + Q-Values'
+        
         if absence:
             for i in range(len(self.presence)):
                 if self.presence[i] == 0:
                     plt.hlines(y=0.01, xmin=self.dates[i-1], xmax=self.dates[i], color='red', linewidth = 2.5)
-            
             var_names.append('Absence')
             title += ' + Absence'
         

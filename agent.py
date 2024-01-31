@@ -19,7 +19,7 @@ import math
 class DDQNAgent:
     
     def __init__(self, env, features, epsilon_decay, 
-                 epsilon_start, epsilon_end, discount_rate, lr, buffer_size, price_horizon, hidden_dim, num_layers, action_classes, positions, reward_shaping, shaping_factor, seed = 2705, normalize = True, verbose = False):
+                 epsilon_start, epsilon_end, discount_rate, lr, buffer_size, price_horizon, hidden_dim, num_layers, action_classes, positions, reward_shaping, shaping_factor, dropout = 0.1, seed = 2705, normalize = True, verbose = False):
         """
         Params:
         env = environment that the agent needs to play
@@ -52,11 +52,14 @@ class DDQNAgent:
 
         # Set up price_history queue
         self.price_history = deque(maxlen=price_horizon)
-        self.action_history = deque(maxlen=6)
+        self.action_history = deque(maxlen=3)
         
         # Normalize features per column (feature) but not datetime and price in the first two columns
-        self.grads = self.features[:,[11, 13, 15, 17, 19, 21, 23]] * 1e-3 # Get gradient features for reward shaping, divide by 1000 to bring gradient on same level as reward
-        self.features[:,2:-7] = self.normalize_data(self.features[:,2:-7], axis=0) if self.normalize else self.features[:,2:-7] # Normalize features per column (feature)         
+        #self.grads = self.features[:,[11, 13, 15, 17, 19, 21, 23]] * 1e-3 # Get gradient features for reward shaping, divide by 1000 to bring gradient on same level as reward
+        try:
+            self.features[:,2:-7] = self.normalize_data(self.features[:,2:-7], axis=0) if self.normalize else self.features[:,2:-7] # Normalize features per column (feature)         
+        except:
+            pass
         
         feature_dim = features.shape[1] - 2 # -2 because we don't want to include the datetime and price columns
         print("Number of engineered features: ", feature_dim)
@@ -69,10 +72,14 @@ class DDQNAgent:
         print("State dimension: ", self.state_dim)
         
         self.dqn_index = 0
-        self.dqn_predict = DQN(self.learning_rate, input_dim=self.state_dim, hidden_dim=hidden_dim,  action_classes = action_classes).to(self.device)#num_layers = num_layers,
-        self.dqn_target = DQN(self.learning_rate, input_dim=self.state_dim, hidden_dim=hidden_dim, action_classes = action_classes).to(self.device) # num_layers = num_layers,
+        self.dqn_predict = DQN(self.learning_rate, input_dim=self.state_dim, hidden_dim=hidden_dim, num_layers = num_layers, action_classes = action_classes, dropout_rate = dropout).to(self.device)#num_layers = num_layers,
+        self.dqn_target = DQN(self.learning_rate, input_dim=self.state_dim, hidden_dim=hidden_dim, num_layers = num_layers, action_classes = action_classes, dropout_rate = dropout).to(self.device) # num_layers = num_layers,
         self.dqn_target.load_state_dict(self.dqn_predict.state_dict())  # Initialize target network with the same parameters as the predict network
+        self.dqn_target.eval()
         self.replay_memory = ReplayBuffer(self.env, state_dim = self.state_dim, buffer_size = self.buffer_size, action_classes = action_classes, state_func=self.obs_to_state, action_func=self.action_to_cont, reward_func = self.shape_reward) # State function is used to transform the observation to the state of the environment
+        
+        # Define Platau LR scheduler
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.dqn_predict.optimizer, mode='min', factor=0.5, patience=5, verbose=True, threshold=0.0001, threshold_mode='rel')
         
         print("Number of DQN Parameters: ", sum(p.numel() for p in self.dqn_predict.parameters() if p.requires_grad))
 
@@ -86,12 +93,14 @@ class DDQNAgent:
             if not self.normalize:
                 return var
             
+            eps = 1e-10  # small constant
+
             if axis is None:
-                norm = (var - np.min(var)) / (np.max(var) - np.min(var))
+                norm = (var - np.min(var)) / (np.max(var) - np.min(var) + eps)
                 return norm if np.max(var) != np.min(var) else np.ones(var.shape) # If all values are the same, return an array of ones
         
             else:
-                return (var - np.min(var, axis=axis)) / (np.max(var, axis=axis) - np.min(var, axis=axis))
+                return (var - np.min(var, axis=axis)) / (np.max(var, axis=axis) - np.min(var, axis=axis) + eps)
     
 
 
@@ -141,11 +150,11 @@ class DDQNAgent:
         features = features[1:] #by doing two times features[1:] we remove the date and price from the features array (not elegant but works)
         
         # Add hour, day, peak and valley to shaping features for later reward shaping
-        shaping_features['hour'] = features[0]
-        shaping_features['day'] = features[1]
-        shaping_features['peak'] = features[-7]
-        shaping_features['valley'] = features[-6]
-        shaping_features['grads'] = self.grads[self.env.counter]
+        # shaping_features['hour'] = features[0]
+        # shaping_features['day'] = features[1]
+        # shaping_features['peak'] = features[-7]
+        # shaping_features['valley'] = features[-6]
+        # shaping_features['grads'] = self.grads[self.env.counter]
         
         date = datetime.datetime(int(obs[6]), 1, 1) + datetime.timedelta(days=int(obs[4])-1, hours=int(obs[2])) # Needed to get the correct date from day of year and hour of day
         
@@ -210,7 +219,7 @@ class DDQNAgent:
 
  
         
-    def shape_reward(self, reward, action, shape_vars):
+    def shape_reward(self, reward, action, shape_vars, battery_factor = 0.1):
         """
         Function to apply a penalty to the reward based on the gradient of the price.
 
@@ -229,12 +238,12 @@ class DDQNAgent:
             print("No Reward Shaping")
             return reward
 
-        grad1, grad2, grad4, grad6, grad8, grad12, grad18 = shape_vars['grads']
-        hour = shape_vars['hour']
-        peak = shape_vars['peak']
-        valley = shape_vars['valley']
+        # grad1, grad2, grad4, grad6, grad8, grad12, grad18 = shape_vars['grads']
+        # hour = shape_vars['hour']
+        # peak = shape_vars['peak']
+        # valley = shape_vars['valley']
 
-        # ## Shaping for Sell Action: Penalize buying when price is still increasing, don't penalize when on top
+        # # ## Shaping for Sell Action: Penalize buying when price is still increasing, don't penalize when on top
         # if action < 0:
         #     if grad1 > 0:
         #         penalty = max(grad1, grad2)  # Ensured positive penalty
@@ -245,38 +254,86 @@ class DDQNAgent:
         #         penalty = 0
 
 
-
         # ## Shaping for Buy Action
         # elif action > 0:
 
         #     if (grad1 > 0) and grad6 < 0 and grad8 < 0 and grad18 < 0: # Aims at points where the price is increasing shortly after a dip (price valley)
         #         penalty = np.abs(max((grad6, grad8)))
         #     else:
-        #         penalty = 0           
-            
-        # Enforce buying when price is decreasing, enforce selling when price is increasing
-        penalty = abs(max(grad1, grad2, grad4, grad6, grad8, key = abs))
+        #         penalty = 0        
         
-        # This is either a positive (enforcing) penalty, if action > 0, or a negative penalty, if action < 0
+        # # Add value of battery charge to reward
+        # shaped_reward = reward
+        
+        
+        
+        #shaped_reward += self.env.battery_level * grad4 * 0.3 # Battery Charge has a third of the value if will when it is discharged
+   
+
+        ## Successful Shape:
+        ## Enforce buying when price is decreasing, enforce selling when price is increasing        
+        ## This is either a positive (enforcing) penalty, if action > 0, or a negative penalty, if action < 0
         next_battery_level = np.clip(self.env.battery_level + action * self.env.max_power * self.env.charge_efficiency, 0, self.env.battery_capacity)
+        battery_value = np.mean(self.price_history)*1e-3 # If the price history is not full, just take the average of the price history
+        penalized_reward = reward + battery_value * next_battery_level * 0.1
         
-        try:
-            battery_value = np.mean(self.price_history[-18:-12])*1e-3 # Average price of 18 to 12 hours ago. Reasoning: This is around the time in which the ammassed battery charge will be discharged again, so we want to know the price at that time
-        except:
-            battery_value = np.mean(self.price_history)*1e-3 # If the price history is not full, just take the average of the price history
+        # Scale the reward based on the factor
+        # shaped_reward = reward * (1 - self.reward_factor) + penalized_reward * self.reward_factor
+
+
+
+        # # "Correct" Shape: Don't reward holding battery charge explicitly       
+        # # This is either a positive (enforcing) penalty, if action > 0, or a negative penalty, if action < 0
+        # battery_level = np.clip(self.env.battery_level + action * self.env.max_power * self.env.charge_efficiency, 0, 50)
+        # battery_change = (battery_level - self.env.battery_level) * self.env.car_is_available # - self.env.battery_level
         
-        penalized_reward = reward + battery_value * next_battery_level * 0.1 
+        # battery_value = np.mean(self.price_history)*1e-3 # If the price history is not full, just take the average of the price history
+        # penalized_reward = reward + battery_value * battery_change * 0.1
+  
+
+        ## COMBINED SHAPE
+        # First step:
+        # Incentivize buying when price is decreasing, don't penalize selling when price is increasing
+        # if len(self.price_history) < 18:
+        #     return reward
         
-        # if np.abs(battery_value * next_battery_level * 0.1) > np.abs(reward) and np.abs(reward) > 0:
-        #     print("Penalty too high: ", battery_value * next_battery_level * 0.1, "Reward: ", reward)
-            
+        # norm_price = self.normalize_data(list(self.price_history))
+        # multiplier = 1 - norm_price[-1] # If the price is high, the multiplier is low, if the price is low, the multiplier is high. Multiplier is between 0 and 1
+        # #multiplier = multiplier if multiplier > 0.8 or multiplier < 0.2 else 0 # If the price is in the middle, the multiplier is 0
+        # penalized_reward = reward + np.abs(reward) * multiplier * action # if factor = 1, charging at the lowest point costs nothin, charging at the highest point is almost not penalized.
+        
+        # # Second step:
+        # # Add value for battery charge to reward
+        # next_battery_level = np.clip(self.env.battery_level + action * self.env.max_power * self.env.charge_efficiency, 0, self.env.battery_capacity)
+        # battery_value = np.mean(self.price_history) * 1e-3  
+        # penalized_reward = penalized_reward + battery_value * next_battery_level * battery_factor
+        
+        
+        
+        ## PEAK AND VALLEY SHAPE
+        # if (self.env.hour == 4 and action > 0) or (valley == 1 and action > 0):
+        #     shaped_reward = np.abs(shaped_reward)
+        
+        # if self.env.hour == 5 and self.action_history[-1] > 0 and action > 0:
+        #     shaped_reward = -np.abs(shaped_reward)
+        
+        # if (peak == 1 and action < 0):
+        #     shaped_reward = 2 * np.abs(shaped_reward)
+        
+        
+        # CONSECUTIVE ACTION SHAPE
+        # Enforce two consecutive actions of the same type
+        # if len(self.action_history) > 1:
+        #     if action == self.action_history[-1] and action != self.action_history[-2]:
+        #         shaped_reward = shaped_reward + 0.2 * np.abs(shaped_reward)
+        
+        
+        
         # Scale the reward based on the factor
         shaped_reward = reward * (1 - self.reward_factor) + penalized_reward * self.reward_factor
 
-        # Add value of battery charge to reward
-        #shaped_reward = reward
-        #shaped_reward += self.env.battery_level * grad4 * 0.3 # Battery Charge has a third of the value if will when it is discharged
-
+        ## IDEA: Circumvent the absence of the car and train the agent without the absence, but wiht the car availability as a feature
+        
         return shaped_reward
     
         
@@ -290,6 +347,7 @@ class DDQNAgent:
         
         if self.dqn_index == 5000:
             self.dqn_target.load_state_dict(self.dqn_predict.state_dict())
+            self.dqn_target.eval()
             self.dqn_index = 0
 
 
@@ -312,6 +370,7 @@ class DDQNAgent:
 
         if not greedy and random.random() <= epsilon:
             action = random.randint(0, self.action_classes-1)
+            q_values = torch.zeros(self.action_classes)
         else:
             obs_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
             q_values = self.dqn_predict(obs_t.unsqueeze(0))
@@ -321,7 +380,7 @@ class DDQNAgent:
         if len(self.price_history) != self.price_history.maxlen:
             action = (self.action_classes - 1) / 2 # Middle action in which agents doesn't do anything
         
-        return action 
+        return action, q_values
         
         
         
@@ -532,27 +591,42 @@ class ReplayBuffer:
 
 class DQN(nn.Module):
     
-    def __init__(self, learning_rate, input_dim, hidden_dim, action_classes, num_layers):
+    def __init__(self, learning_rate, input_dim, hidden_dim, action_classes, num_layers, dropout_rate):
         '''
         Params:
         learning_rate = learning rate used in the update
         hidden_dim = number of hidden units in the hidden layer
         action_classes = number of actions that the agent can take
+        dropout_rate = dropout rate to be applied after each hidden layer
         '''
         super(DQN, self).__init__()
+
+        # # Define the layers of the DQN flexibly
+        # layers = []
+        # layers.append(nn.Linear(input_dim, hidden_dim))
+        # layers.append(nn.LeakyReLU())
+        # for _ in range(num_layers - 2):
+        #     layers.append(nn.Linear(hidden_dim, hidden_dim))
+        #     layers.append(nn.LeakyReLU())
+        # layers.append(nn.Linear(hidden_dim, action_classes))
+        # self.dnn = nn.Sequential(*layers)
+        # self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+
 
         # Define the layers of the DQN flexibly
         layers = []
         layers.append(nn.Linear(input_dim, hidden_dim))
-        layers.append(nn.LeakyReLU())  
+        layers.append(nn.LeakyReLU())
+        layers.append(nn.Dropout(dropout_rate))
         for _ in range(num_layers - 2):
             layers.append(nn.Linear(hidden_dim, hidden_dim))
-            layers.append(nn.LeakyReLU())  
+            layers.append(nn.LeakyReLU())
+            layers.append(nn.Dropout(dropout_rate))
         layers.append(nn.Linear(hidden_dim, action_classes))
         self.dnn = nn.Sequential(*layers)
         self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
-    
-    
+        
+        
     def forward(self, x):
         '''
         Params:
@@ -565,43 +639,43 @@ class DQN(nn.Module):
     
 
 
-class DQN(nn.Module):
+# class DQN(nn.Module):
     
-    def __init__(self, learning_rate, input_dim, hidden_dim, action_classes):
+#     def __init__(self, learning_rate, input_dim, hidden_dim, action_classes):
         
-        '''
-        Params:
-        learning_rate = learning rate used in the update
-        hidden_dim = number of hidden units in the hidden layer
-        action_classes = number of actions that the agent can take
-        '''
+#         '''
+#         Params:
+#         learning_rate = learning rate used in the update
+#         hidden_dim = number of hidden units in the hidden layer
+#         action_classes = number of actions that the agent can take
+#         '''
         
-        super(DQN,self).__init__()
+#         super(DQN,self).__init__()
                 
-        self.linear1 = nn.Linear(input_dim, hidden_dim)
-        self.linear2 = nn.Linear(hidden_dim, hidden_dim)
-        self.linear3 = nn.Linear(hidden_dim, hidden_dim)
-        self.linear4 = nn.Linear(hidden_dim, action_classes)
+#         self.linear1 = nn.Linear(input_dim, hidden_dim)
+#         self.linear2 = nn.Linear(hidden_dim, hidden_dim)
+#         self.linear3 = nn.Linear(hidden_dim, hidden_dim)
+#         self.linear4 = nn.Linear(hidden_dim, action_classes)
         
-        self.leakyReLU = nn.LeakyReLU()
+#         self.leakyReLU = nn.LeakyReLU()
         
-        self.optimizer = optim.Adam(self.parameters(), lr = learning_rate)
+#         self.optimizer = optim.Adam(self.parameters(), lr = learning_rate)
     
     
     
-    def forward(self, x):
+#     def forward(self, x):
         
-        '''
-        Params:
-        x = observation
-        '''
+#         '''
+#         Params:
+#         x = observation
+#         '''
         
-        x = self.leakyReLU(self.linear1(x))
-        x = self.leakyReLU(self.linear2(x))
-        x = self.leakyReLU(self.linear3(x))
-        x = self.linear4(x)
+#         x = self.leakyReLU(self.linear1(x))
+#         x = self.leakyReLU(self.linear2(x))
+#         x = self.leakyReLU(self.linear3(x))
+#         x = self.linear4(x)
         
-        return x
+#         return x
     
 ###################################
 ########### TemporalDQN ###########
