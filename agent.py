@@ -19,7 +19,7 @@ import math
 class DDQNAgent:
     
     def __init__(self, env, features, epsilon_decay, 
-                 epsilon_start, epsilon_end, discount_rate, lr, buffer_size, price_horizon, hidden_dim, num_layers, action_classes, positions, reward_shaping, shaping_factor, dropout = 0.1, seed = 2705, normalize = True, verbose = False):
+                 epsilon_start, epsilon_end, discount_rate, lr, buffer_size, price_horizon, hidden_dim, num_layers, action_classes, positions, reward_shaping, shaping_factor, implicit_shape, dropout = 0.2, seed = 2705, normalize = True, verbose = False):
         """
         Params:
         env = environment that the agent needs to play
@@ -47,15 +47,16 @@ class DDQNAgent:
         self.positions = positions
         self.reward_shaping = reward_shaping
         self.reward_factor = shaping_factor
+        self.implicit_shape = implicit_shape
         self.normalize = normalize
         self.verbose = verbose
 
         # Set up price_history queue
         self.price_history = deque(maxlen=price_horizon)
-        self.action_history = deque(maxlen=3)
+        self.action_history = deque(maxlen=6)
         
         # Normalize features per column (feature) but not datetime and price in the first two columns
-        #self.grads = self.features[:,[11, 13, 15, 17, 19, 21, 23]] * 1e-3 # Get gradient features for reward shaping, divide by 1000 to bring gradient on same level as reward
+        self.grads = self.features[:,[11, 13, 15, 17, 19, 21, 23]] * 1e-3 # Get gradient features for reward shaping, divide by 1000 to bring gradient on same level as reward
         try:
             self.features[:,2:-7] = self.normalize_data(self.features[:,2:-7], axis=0) if self.normalize else self.features[:,2:-7] # Normalize features per column (feature)         
         except:
@@ -134,9 +135,6 @@ class DDQNAgent:
         price = obs[1]
         car_is_available = obs[7]
         
-        # Create shaping_features
-        shaping_features = dict()
-        
         # Fill price history
         self.price_history.append(price)
 
@@ -149,12 +147,9 @@ class DDQNAgent:
         feature_price = features[0]
         features = features[1:] #by doing two times features[1:] we remove the date and price from the features array (not elegant but works)
         
-        # Add hour, day, peak and valley to shaping features for later reward shaping
-        # shaping_features['hour'] = features[0]
-        # shaping_features['day'] = features[1]
-        # shaping_features['peak'] = features[-7]
-        # shaping_features['valley'] = features[-6]
-        # shaping_features['grads'] = self.grads[self.env.counter]
+        # Add peak and valley to shaping features for later reward shaping
+        self.peak = features[-7]
+        self.valley = features[-6]
         
         date = datetime.datetime(int(obs[6]), 1, 1) + datetime.timedelta(days=int(obs[4])-1, hours=int(obs[2])) # Needed to get the correct date from day of year and hour of day
         
@@ -174,7 +169,7 @@ class DDQNAgent:
             # features are already normalized in the setup function
         
         if self.verbose:
-            print("Date:", date, "Grads:", shaping_features['grads'])
+            print("Date:", date)
         
         # Add positional encoding to price history
         if self.positions:
@@ -183,7 +178,7 @@ class DDQNAgent:
         # Concatenate price history, battery level, car availability and features
         state = np.concatenate((price_history, action_history, np.array([battery_level, car_is_available]), features))   
         
-        return state, shaping_features
+        return state
     
 
 
@@ -219,29 +214,20 @@ class DDQNAgent:
 
  
         
-    def shape_reward(self, reward, action, shape_vars, battery_factor = 0.1):
+    def shape_reward(self, reward, action, peakvalley = False):
         """
         Function to apply a penalty to the reward based on the gradient of the price.
 
         Args:
             reward (float): The original reward.
             action (int): The chosen action.
-            shape_vars (dict): Dictionary of variables needed for reward shaping.
-            factor (float): The factor to control the scaling of the penalty.
-            apply (bool): Whether to apply the penalty or not.
 
         Returns:
             shaped_reward (float): The scaled reward with penalty applied.
         """
 
         if not self.reward_shaping:
-            print("No Reward Shaping")
             return reward
-
-        # grad1, grad2, grad4, grad6, grad8, grad12, grad18 = shape_vars['grads']
-        # hour = shape_vars['hour']
-        # peak = shape_vars['peak']
-        # valley = shape_vars['valley']
 
         # # ## Shaping for Sell Action: Penalize buying when price is still increasing, don't penalize when on top
         # if action < 0:
@@ -273,13 +259,11 @@ class DDQNAgent:
         ## Successful Shape:
         ## Enforce buying when price is decreasing, enforce selling when price is increasing        
         ## This is either a positive (enforcing) penalty, if action > 0, or a negative penalty, if action < 0
-        next_battery_level = np.clip(self.env.battery_level + action * self.env.max_power * self.env.charge_efficiency, 0, self.env.battery_capacity)
-        battery_value = np.mean(self.price_history)*1e-3 # If the price history is not full, just take the average of the price history
-        penalized_reward = reward + battery_value * next_battery_level * 0.1
         
-        # Scale the reward based on the factor
-        # shaped_reward = reward * (1 - self.reward_factor) + penalized_reward * self.reward_factor
-
+        if self.implicit_shape:
+            next_battery_level = np.clip(self.env.battery_level + action * self.env.max_power * self.env.charge_efficiency, 0, self.env.battery_capacity)
+            battery_value = np.mean(self.price_history)*1e-3 # If the price history is not full, just take the average of the price history
+            penalized_reward = reward + battery_value * next_battery_level * 0.1
 
 
         # # "Correct" Shape: Don't reward holding battery charge explicitly       
@@ -294,14 +278,16 @@ class DDQNAgent:
         ## COMBINED SHAPE
         # First step:
         # Incentivize buying when price is decreasing, don't penalize selling when price is increasing
-        # if len(self.price_history) < 18:
-        #     return reward
         
-        # norm_price = self.normalize_data(list(self.price_history))
-        # multiplier = 1 - norm_price[-1] # If the price is high, the multiplier is low, if the price is low, the multiplier is high. Multiplier is between 0 and 1
-        # #multiplier = multiplier if multiplier > 0.8 or multiplier < 0.2 else 0 # If the price is in the middle, the multiplier is 0
-        # penalized_reward = reward + np.abs(reward) * multiplier * action # if factor = 1, charging at the lowest point costs nothin, charging at the highest point is almost not penalized.
-        
+        if not self.implicit_shape:
+            if len(self.price_history) < 18:
+                return reward
+            
+            norm_price = self.normalize_data(list(self.price_history))
+            multiplier = 1 - norm_price[-1] # If the price is high, the multiplier is low, if the price is low, the multiplier is high. Multiplier is between 0 and 1
+            penalized_reward = reward + np.abs(reward) * multiplier * action # if factor = 1, charging at the lowest point costs nothin, charging at the highest point is almost not penalized.
+            
+            
         # # Second step:
         # # Add value for battery charge to reward
         # next_battery_level = np.clip(self.env.battery_level + action * self.env.max_power * self.env.charge_efficiency, 0, self.env.battery_capacity)
@@ -309,17 +295,14 @@ class DDQNAgent:
         # penalized_reward = penalized_reward + battery_value * next_battery_level * battery_factor
         
         
-        
         ## PEAK AND VALLEY SHAPE
-        # if (self.env.hour == 4 and action > 0) or (valley == 1 and action > 0):
-        #     shaped_reward = np.abs(shaped_reward)
-        
-        # if self.env.hour == 5 and self.action_history[-1] > 0 and action > 0:
-        #     shaped_reward = -np.abs(shaped_reward)
-        
-        # if (peak == 1 and action < 0):
-        #     shaped_reward = 2 * np.abs(shaped_reward)
-        
+        # if peakvalley:
+        #     if (self.env.hour == 5 and action > 0) or (self.valley == 1 and action > 0) or (self.env.hour == 6 and self.action_history[-1] > 0 and action > 0):
+        #         penalized_reward = max(np.abs(penalized_reward) * 0.5, 0.1) # give positive reward for buying at the lowest point
+            
+        #     if (self.peak == 1 and action < 0):
+        #         penalized_reward = 2 * np.abs(penalized_reward) # Double the reward for selling at the highest point
+            
         
         # CONSECUTIVE ACTION SHAPE
         # Enforce two consecutive actions of the same type
@@ -328,11 +311,8 @@ class DDQNAgent:
         #         shaped_reward = shaped_reward + 0.2 * np.abs(shaped_reward)
         
         
-        
         # Scale the reward based on the factor
         shaped_reward = reward * (1 - self.reward_factor) + penalized_reward * self.reward_factor
-
-        ## IDEA: Circumvent the absence of the car and train the agent without the absence, but wiht the car availability as a feature
         
         return shaped_reward
     
@@ -481,10 +461,10 @@ class ReplayBuffer:
     def __init__(self, env, state_dim, buffer_size, action_classes, min_replay_size = 1000, state_func = None, action_func = None, reward_func = None):
         '''
         Params:
-        env = environment that the agent needs to play
-        buffer_size = max number of transitions that the experience replay buffer can store
-        min_replay_size = min number of (random) transitions that the replay buffer needs to have when initialized
-        seed = seed for random number generator for reproducibility
+            env = environment that the agent needs to play
+            buffer_size = max number of transitions that the experience replay buffer can store
+            min_replay_size = min number of (random) transitions that the replay buffer needs to have when initialized
+            seed = seed for random number generator for reproducibility
         '''
         
         self.env = env
@@ -497,7 +477,7 @@ class ReplayBuffer:
         
         #Initialize replay buffer with random transitions (transitions based on random actions)      
         obs, r, terminated, _ , _ = env.step(random.uniform(-1,1))
-        state, shape_vars = state_func(obs)
+        state = state_func(obs)
         
         while True:
             
@@ -507,10 +487,10 @@ class ReplayBuffer:
             new_obs, r, terminated, _ , _ = env.step(cont_action)
 
             # Get state from observation
-            new_state, new_shape_vars = state_func(new_obs)
+            new_state = state_func(new_obs)
             
             #Reward Shaping
-            reward = reward_func(r, cont_action, shape_vars)
+            reward = reward_func(r, cont_action)
 
             if state.shape[0] == state_dim and new_state.shape[0] == state_dim:
             
@@ -518,7 +498,6 @@ class ReplayBuffer:
                 self.replay_buffer.append(transition)
             
             state = new_state
-            shape_vars = new_shape_vars
     
             if len(self.replay_buffer) >= self.min_replay_size:
                 break
@@ -531,7 +510,7 @@ class ReplayBuffer:
     def add_data(self, data): 
         '''
         Params:
-        data = relevant data of a transition, i.e. action, new_obs, reward, done
+            data = relevant data of a transition, i.e. action, new_obs, reward, done
         '''
         
         if data[0].shape[0] != self.state_dim and data[4].shape[0] != self.state_dim : # Check if the state dimension of the data matches the state dimension of the replay buffer
@@ -544,10 +523,10 @@ class ReplayBuffer:
     def sample(self, batch_size):
         '''
         Params:
-        batch_size = number of transitions that will be sampled
+            batch_size = number of transitions that will be sampled
         
         Returns:
-        tensor of states, actions, rewards, dones (boolean) and new_states 
+            tensor of states, actions, rewards, dones (boolean) and new_states 
         '''
         
         if len(self.replay_buffer) < batch_size:
@@ -556,7 +535,7 @@ class ReplayBuffer:
         # Sample random transitions
         transitions = random.sample(self.replay_buffer, batch_size)
         
-        # Add last transition to the sample to make sure that the last two (current) transitions are included in the sample --> MIXED TRAINING / PRIORITIZED EXPERIENCE REPLAY
+        # Add last transition to the sample to make sure that the last (current) transition is included in the sample --> MIXED TRAINING / PRIORITIZED EXPERIENCE REPLAY
         transitions[-1] = self.replay_buffer[-1] 
         
         # Shuffle transitions

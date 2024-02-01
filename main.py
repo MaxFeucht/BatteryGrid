@@ -80,7 +80,7 @@ for i in range(730*24 -1): # Loop through 2 years -> 730 days * 24 hours
     next_observation, reward, terminated, truncated, info = env.step(cont_action)
     
     # Transform the observation to a state. This entails adding the price history and the  
-    new_state, _ = agent.obs_to_state(next_observation)
+    new_state = agent.obs_to_state(next_observation)
 
     # Update observation and state
     observation = next_observation

@@ -44,7 +44,7 @@ class Training():
         episode_reward = 0
 
         obs, r, terminated, _, _ = self.env.step(random.randint(-1,1)) # Reset environment and get initial observation
-        state, grads = self.agent.obs_to_state(obs)
+        state = self.agent.obs_to_state(obs)
 
         for i in tqdm(range(self.rep)):
 
@@ -52,10 +52,10 @@ class Training():
             cont_action = self.agent.action_to_cont(action) # Convert to continuous action
             
             new_obs, r, t, _, _ = self.env.step(cont_action)
-            new_state, new_grads = self.agent.obs_to_state(new_obs)
+            new_state = self.agent.obs_to_state(new_obs)
             
             # Reward Shaping            
-            new_reward = self.agent.shape_reward(r, cont_action, grads)
+            new_reward = self.agent.shape_reward(r, cont_action)
 
             # Fill replay buffer - THIS IS THE ONLY THING WE DO WITH THE CURRENT OBSERVATION - LEARNING IS FULLY PERFORMED FROM THE REPLAY BUFFER
             if state.shape[0] == self.agent.state_dim and new_state.shape[0] == self.agent.state_dim:
@@ -71,7 +71,6 @@ class Training():
 
             # New observation
             state = new_state
-            grads = new_grads # Gradients for reward shaping
             
             # Reset environment if end of tuning range is reached
             if range is not None:
@@ -191,7 +190,7 @@ class DDQNEvaluation():
         
 
 
-    def evaluate(self, agent = None):
+    def evaluate(self, agent = None, validation = False):
         """Function to iterate through data and take actions based on agent policy
 
         Args:
@@ -219,12 +218,12 @@ class DDQNEvaluation():
                 self.dates.append(date) 
                 
                 # State from observation
-                state, grads = agent.obs_to_state(obs)
+                state = agent.obs_to_state(obs)
                 action, q = agent.choose_action(0, state, greedy = True) # 0 is the step number for epsilon decay, not used here
                 
                 cont_action = agent.action_to_cont(action)
                 obs, reward, terminated, _, _ = agent.env.step(cont_action)
-                shaped_reward = agent.shape_reward(reward, cont_action, grads)
+                shaped_reward = agent.shape_reward(reward, cont_action)
                 
                 self.actions.append(action)
                 self.balance.append(reward)
@@ -232,8 +231,11 @@ class DDQNEvaluation():
                 self.q_values.append(q)
                 
                 if terminated:
-                    print("Absolute Balance: ", np.sum(self.balance))
+                    statement = "Training Balance: " if not validation else "Validation Balance: "
+                    print(statement, np.sum(self.balance))
                     break
+        
+        return np.sum(self.balance)
 
 
 
@@ -373,6 +375,8 @@ class Plotter():
         plt.xticks(rotation=45)
         plt.title(title + '\n', size = 14)
         plt.show()
+        
+        
 
 
 

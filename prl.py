@@ -1,3 +1,5 @@
+
+#%%
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,7 +17,6 @@ from TestEnv import Electric_Car
 seed = 2705
 TRAIN = False
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
 
 
 # Load Data
@@ -38,44 +39,49 @@ features_train = pd.read_csv('data/features_train.csv')
 features_val = pd.read_csv('data/features_val.csv')
 
 # Train without features
-features_train = features_train.iloc[:,:9]
-features_val = features_val.iloc[:,:9]
+#features_train = features_train.iloc[:,:9]
+#features_val = features_val.iloc[:,:9]
 
 #%%
 
 # Define the intervals for gamma and reward shaping factor
-gamma_interval = [0.955, 0.97]
-reward_shaping_interval = [0.6, 0.8]
-#battery_factor_interval = [0.0, 0.15]
+gamma_interval = [0.95, 0.96]
+reward_shaping_interval = [0.6, 0.7]
+peakvalley = [False]
+# #battery_factor_interval = [0.0, 0.15]
 
-# Define the number of iterations for the random search
+# # Define the number of iterations for the random search
 num_iterations = 100
 
 for i in range(num_iterations):
     
     # Generate random values within the intervals
     gamma = round(np.random.uniform(*gamma_interval), 4)
-    reward_shaping_factor = round(np.random.uniform(*reward_shaping_interval), 4)
+    factor = round(np.random.uniform(*reward_shaping_interval), 4)
     battery_factor = None #round(np.random.uniform(*battery_factor_interval), 4)
     
-    print(f'\nIteration: {i+1}, Gamma: {gamma}, Reward Shaping Factor: {reward_shaping_factor}')
+    factor = 0.85
+    gamma = 0.955
+    
+    print(f'\nIteration: {i+1}, Gamma: {gamma}, Reward Shaping Factor: {factor}')
         
     seed = 2705
-    rep = 105000 * 10
+    rep = 105000 * 3
     batch_size = 48
     gamma = gamma
     epsilon = 1.0
-    epsilon_decay = 199999
+    epsilon_decay = 99999
     epsilon_min = 0.1
-    learning_rate = 1e-3
+    learning_rate = 5e-5
     price_horizon = 48
     future_horizon = 0
-    hidden_dim = 96
+    hidden_dim = 128
     num_layers = 4
     positions = False
     action_classes = 3
     reward_shaping = True
-    factor = reward_shaping_factor
+    implicit_shape = True
+    factor = factor
     verbose = False
     normalize = True
     df = train_name
@@ -100,6 +106,7 @@ for i in range(num_iterations):
                     positions = positions,
                     action_classes = action_classes, 
                     reward_shaping = reward_shaping,
+                    implicit_shape = implicit_shape,
                     shaping_factor = factor,
                     normalize = normalize,
                     verbose = verbose)
@@ -118,6 +125,7 @@ for i in range(num_iterations):
                     positions = positions,
                     action_classes = action_classes, 
                     reward_shaping = reward_shaping,
+                    implicit_shape = implicit_shape,
                     shaping_factor = factor,
                     normalize = normalize,
                     verbose = verbose)
@@ -128,20 +136,20 @@ for i in range(num_iterations):
     episode_counter = 0
     episode_reward = 0
 
-
-    obs, r, t, _, _ = env.step(random.randint(-1,1)) # Reset environment and get initial observation
-    state, grads = agent.obs_to_state(obs)
-
+    obs,_,_,_,_ = env.step(0) # First do nothing
+    state = agent.obs_to_state(obs)
+    
     for i in tqdm(range(rep)):
 
         action, q = agent.choose_action(i, state, greedy = False) # Choose action (discrete)
         cont_action = agent.action_to_cont(action) # Convert to continuous action
         
+        # Get new observation and state
         new_obs, r, t, _, _ = env.step(cont_action)
-        new_state, new_grads = agent.obs_to_state(new_obs)
+        new_state = agent.obs_to_state(new_obs)
         
         # Reward Shaping            
-        new_reward = agent.shape_reward(r, cont_action, grads, battery_factor = battery_factor)
+        new_reward = agent.shape_reward(r, cont_action, peakvalley = False)
 
         # Fill replay buffer - THIS IS THE ONLY THING WE DO WITH THE CURRENT OBSERVATION - LEARNING IS FULLY PERFORMED FROM THE REPLAY BUFFER
         if state.shape[0] == agent.state_dim and new_state.shape[0] == agent.state_dim:
@@ -156,9 +164,7 @@ for i in range(num_iterations):
         episode_loss += loss
 
         # New observation
-        state = new_state
-        grads = new_grads # Gradients for reward shaping
-        
+        state = new_state        
 
         if t:
             # Reset Environment
@@ -179,28 +185,30 @@ for i in range(num_iterations):
             
             
             if episode_counter % 4 == 0:
-                # Evaluate DQN
-                print("Training Evaluation")
+                # Evaluate DQN - Training
                 train_dqn = DDQNEvaluation(price_horizon = price_horizon)
-                train_dqn.evaluate(agent = agent)
+                _ = train_dqn.evaluate(agent = agent)
                 
-                # Evaluate DQN
-                print("Validation Evaluation")
+                # Evaluate DQN - Validation
                 val_agent.dqn_predict.load_state_dict(agent.dqn_predict.state_dict())
                 val_dqn = DDQNEvaluation(price_horizon = price_horizon)
-                val_dqn.evaluate(agent = val_agent)
+                balance = val_dqn.evaluate(agent = val_agent, validation = True)
                 
-                # Reset Environment
+                # Reset Environments after evaluation
                 env.counter = 0
                 env.hour = 1
                 env.day = 1
                 val_env.counter = 0
                 val_env.hour = 1
                 val_env.day = 1
+                
+                if balance < -650:
+                    print("Balance too low, stopping training")
+                    #break
             
                 
     # Save agent
-    torch.save(agent.dqn_predict.state_dict(), f'models/charge_{gamma}_factor_{reward_shaping_factor}_no_features.pt')
+    torch.save(agent.dqn_predict.state_dict(), f'models/final_change_tuning_gamma_{gamma}_{factor}.pt')
 
 
 
@@ -324,13 +332,24 @@ torch.save(agent.dqn_predict.state_dict(), f'models/agent_layers{num_layers}_gam
 #%%
 
 
-# reward_shaping_factor = 0.772
-# gamma = 0.954
-# factor = reward_shaping_factor
-
 # reward_shaping_factor = 0.7805
 # gamma = 0.9592
 # factor = reward_shaping_factor
+
+# gamma = 0.9844
+# factor = 0.8926
+# pv = False
+
+# gamma = 0.9819
+# factor = 0.7321
+# pv = False
+
+# gamma = 0.9584
+# factor = 0.6148
+# pv = False
+
+gamma = 0.9585
+factor = 0.79
 
 
 ## Evaluation ##
@@ -363,32 +382,42 @@ agent = DDQNAgent(env = env,
                 action_classes = action_classes, 
                 reward_shaping = reward_shaping,
                 shaping_factor = factor,
+                implicit_shape = implicit_shape,
                 normalize = normalize,
                 verbose = False)
 
-agent.dqn_predict.load_state_dict(torch.load(f'models/charge_{gamma}_factor_{reward_shaping_factor}_no_features.pt'))
+agent.dqn_predict.load_state_dict(torch.load(f'models/final_change_tuning_gamma_{gamma}.pt'))
 
 # Evaluate Rule-Based Agent
 eval_ddqn = DDQNEvaluation(price_horizon=price_horizon)
-eval_ddqn.evaluate(agent = agent)
+_ = eval_ddqn.evaluate(agent = agent)
 
 #%%
 
 #Visualize DDQN Agent
 #plot_range = [14000, 14300]
-plot_range = [9000, 9200]
-#plot_range = [0, 110000]
+#plot_range = [9200, 9330]
+plot_range = [0, 110000]
 
 plotter = Plotter(eval_ddqn, range = plot_range)
-#plotter.plot_actions(battery = False, balance=False, absence = False)
-# plotter.plot_actions(battery = False, balance=False, absence = True)
-# plotter.plot_actions(battery = False, balance=True, absence = True)
 plotter.plot_actions(battery = True, balance=True, absence = True, shaped = True)
 
 plotter.plot_single()
 
 # %%
+plotter.dates
+plotter.actions
 
+# Plot Q-Values against Reward
+
+
+
+min(plotter.balance)
+
+
+
+
+#%%
 plotter.shaped_balance
 plotter.balance
 
