@@ -52,7 +52,7 @@ class DDQNAgent:
 
         # Set up price_history queue
         self.price_history = deque(maxlen=price_horizon)
-        self.action_history = deque(maxlen=3)
+        self.action_history = deque(maxlen=6)
         
         # Normalize features per column (feature) but not datetime and price in the first two columns
         #self.grads = self.features[:,[11, 13, 15, 17, 19, 21, 23]] * 1e-3 # Get gradient features for reward shaping, divide by 1000 to bring gradient on same level as reward
@@ -62,14 +62,14 @@ class DDQNAgent:
             pass
         
         feature_dim = features.shape[1] - 2 # -2 because we don't want to include the datetime and price columns
-        print("Number of engineered features: ", feature_dim)
+        # print("Number of engineered features: ", feature_dim)
         
         self.state_dim = self.price_horizon + self.action_history.maxlen + feature_dim + 1 + 1 # price history + engineered features + battery level + car availability
         
         if self.positions:
             self.state_dim += self.price_horizon
             
-        print("State dimension: ", self.state_dim)
+        # print("State dimension: ", self.state_dim)
         
         self.dqn_index = 0
         self.dqn_predict = DQN(self.learning_rate, input_dim=self.state_dim, hidden_dim=hidden_dim, num_layers = num_layers, action_classes = action_classes, dropout_rate = dropout).to(self.device)#num_layers = num_layers,
@@ -81,7 +81,7 @@ class DDQNAgent:
         # Define Platau LR scheduler
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.dqn_predict.optimizer, mode='min', factor=0.5, patience=5, verbose=True, threshold=0.0001, threshold_mode='rel')
         
-        print("Number of DQN Parameters: ", sum(p.numel() for p in self.dqn_predict.parameters() if p.requires_grad))
+        # print("Number of DQN Parameters: ", sum(p.numel() for p in self.dqn_predict.parameters() if p.requires_grad))
 
 
 
@@ -278,7 +278,7 @@ class DDQNAgent:
         penalized_reward = reward + battery_value * next_battery_level * 0.1
         
         # Scale the reward based on the factor
-        # shaped_reward = reward * (1 - self.reward_factor) + penalized_reward * self.reward_factor
+        shaped_reward = reward * (1 - self.reward_factor) + penalized_reward * self.reward_factor
 
 
 
@@ -330,7 +330,7 @@ class DDQNAgent:
         
         
         # Scale the reward based on the factor
-        shaped_reward = reward * (1 - self.reward_factor) + penalized_reward * self.reward_factor
+        # shaped_reward = reward * (1 - self.reward_factor) + penalized_reward * self.reward_factor
 
         ## IDEA: Circumvent the absence of the car and train the agent without the absence, but wiht the car availability as a feature
         
@@ -451,7 +451,6 @@ class TemporalDDQNAgent(DDQNAgent):
 
 
 
-
 class ConvDDQNAgent(DDQNAgent):
     
     def __init__ (self, env,
@@ -467,7 +466,6 @@ class ConvDDQNAgent(DDQNAgent):
         
         self.dqn_predict = ConvDQN(self.learning_rate, feature_dim=feature_dim, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, conv_hidden_dim = conv_hidden_dim, kernel_size = kernel_size, num_layers = num_layers, dropout=dropout).to(self.device)
         self.dqn_target = ConvDQN(self.learning_rate,feature_dim=feature_dim, price_horizon=price_horizon, action_classes = action_classes, lin_hidden_dim=lin_hidden_dim, conv_hidden_dim = conv_hidden_dim, kernel_size = kernel_size, num_layers = num_layers, dropout = dropout).to(self.device)
-
 
                 
 
@@ -576,11 +574,6 @@ class ReplayBuffer:
         new_states_t = torch.as_tensor(new_states, dtype = torch.float32, device=self.device)
         
         return states_t, actions_t, rewards_t, terminated_t, new_states_t
-    
-
-
-
-
 
         
         
@@ -600,17 +593,6 @@ class DQN(nn.Module):
         dropout_rate = dropout rate to be applied after each hidden layer
         '''
         super(DQN, self).__init__()
-
-        # # Define the layers of the DQN flexibly
-        # layers = []
-        # layers.append(nn.Linear(input_dim, hidden_dim))
-        # layers.append(nn.LeakyReLU())
-        # for _ in range(num_layers - 2):
-        #     layers.append(nn.Linear(hidden_dim, hidden_dim))
-        #     layers.append(nn.LeakyReLU())
-        # layers.append(nn.Linear(hidden_dim, action_classes))
-        # self.dnn = nn.Sequential(*layers)
-        # self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
 
 
         # Define the layers of the DQN flexibly
@@ -632,51 +614,13 @@ class DQN(nn.Module):
         Params:
         x = observation
         '''
-        
+        #
         x = self.dnn(x)
         
         return x
     
 
 
-# class DQN(nn.Module):
-    
-#     def __init__(self, learning_rate, input_dim, hidden_dim, action_classes):
-        
-#         '''
-#         Params:
-#         learning_rate = learning rate used in the update
-#         hidden_dim = number of hidden units in the hidden layer
-#         action_classes = number of actions that the agent can take
-#         '''
-        
-#         super(DQN,self).__init__()
-                
-#         self.linear1 = nn.Linear(input_dim, hidden_dim)
-#         self.linear2 = nn.Linear(hidden_dim, hidden_dim)
-#         self.linear3 = nn.Linear(hidden_dim, hidden_dim)
-#         self.linear4 = nn.Linear(hidden_dim, action_classes)
-        
-#         self.leakyReLU = nn.LeakyReLU()
-        
-#         self.optimizer = optim.Adam(self.parameters(), lr = learning_rate)
-    
-    
-    
-#     def forward(self, x):
-        
-#         '''
-#         Params:
-#         x = observation
-#         '''
-        
-#         x = self.leakyReLU(self.linear1(x))
-#         x = self.leakyReLU(self.linear2(x))
-#         x = self.leakyReLU(self.linear3(x))
-#         x = self.linear4(x)
-        
-#         return x
-    
 ###################################
 ########### TemporalDQN ###########
 ###################################

@@ -60,7 +60,6 @@ def engineer_features(data, fourier_window = fourier_window, gradient_window = g
     
 
 
-
 def features_pipeline(data, fourier_window, gradient_window, general_window):
     """
     Function that applies all feature engineering functions except for the TCN features.
@@ -204,7 +203,7 @@ def gradient_features(data, num_prev_points=1):
                 point_b = data_copy.loc[location_point_b, 'price']
                 gradient_sum += point_a - point_b
 
-            data_copy.loc[i, f'gradient_{num_prev_points}'] = gradient_sum 
+            data_copy.loc[i, f'gradient_{num_prev_points}'] = gradient_sum / num_prev_points
     
     return data_copy
 
@@ -240,9 +239,10 @@ def second_gradient_features(data, num_prev_points=1):
                 point_b = data_copy.loc[location_point_b, 'gradient_1']
                 second_gradient_sum += point_a - point_b
             
-            data_copy.loc[i, f'second_gradient_{num_prev_points}'] = second_gradient_sum    
+            data_copy.loc[i, f'second_gradient_{num_prev_points}'] = second_gradient_sum / num_prev_points   
     
     return data_copy
+
 
 
 def fourier_top_freq(data, segment_size=72):
@@ -279,6 +279,7 @@ def fourier_top_freq(data, segment_size=72):
     return data_copy
 
 
+
 def moving_averages(data, window_size=72):
     '''
     Calculates the moving average of the 'price' data for each data point.
@@ -286,6 +287,7 @@ def moving_averages(data, window_size=72):
     data_copy = data.copy()  # Create a copy of the input data
     data_copy[f'moving_average_{window_size}'] = data_copy['price'].rolling(window=window_size, min_periods=1).mean()
     return data_copy
+
 
 
 def moving_std(data, window_size=72):
@@ -305,6 +307,7 @@ def moving_std(data, window_size=72):
     return data_copy
 
 
+
 def moving_min(data, window_size=72):
     """
     Function that calculates the moving minimum of the 'price' data for each data point.
@@ -322,6 +325,7 @@ def moving_min(data, window_size=72):
     return data_copy
 
 
+
 def moving_max(data, window_size=72):
     """
     Function that calculates the moving maximum of the 'price' data for each data point.
@@ -337,6 +341,7 @@ def moving_max(data, window_size=72):
     data_copy = data.copy()  # Create a copy of the input data
     data_copy[f'moving_max_{window_size}'] = data_copy['price'].rolling(window=window_size, min_periods=1).max()
     return data_copy
+
 
 
 def date_features(data):
@@ -360,6 +365,7 @@ def date_features(data):
     data_copy['hour'] = data_copy['datetime'].dt.hour
     data_copy['season'] = (data_copy['month'] - 1) // 3 + 1
     return data_copy
+
 
 
 def average_date_features(data):
